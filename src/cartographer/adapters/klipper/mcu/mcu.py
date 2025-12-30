@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, TypedDict, final
 import mcu
 from mcu import MCU_trsync
 from mcu import TriggerDispatch as KlipperTriggerDispatch
+
 from typing_extensions import override
 
 from cartographer.adapters.klipper.mcu.async_processor import AsyncProcessor
@@ -37,6 +38,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+
+
+class CartographerTriggerDispatch(KlipperTriggerDispatch):
+    """TriggerDispatch with extended timeouts for K2's slower USB serial implementation"""
+    
+    K2_TIMEOUT_MULTIPLIER = 8
+    
+    def start(self, print_time):
+        """Override start to temporarily increase timeout constants for Cartographer only"""
+        import mcu as mcu_module
+        
+        # Save original timeout values
+        old_timeout = mcu_module.TRSYNC_TIMEOUT
+        old_single_timeout = mcu_module.TRSYNC_SINGLE_MCU_TIMEOUT
+        
+        try:
+            # Set extended timeouts for Cartographer
+            mcu_module.TRSYNC_TIMEOUT = 0.025 * self.K2_TIMEOUT_MULTIPLIER
+            mcu_module.TRSYNC_SINGLE_MCU_TIMEOUT = 0.250 * self.K2_TIMEOUT_MULTIPLIER
+            
+            # Call parent start method with extended timeouts
+            return super().start(print_time)
+        finally:
+            # Restore original timeout values so other endstops aren't affected
+            mcu_module.TRSYNC_TIMEOUT = old_timeout
+            mcu_module.TRSYNC_SINGLE_MCU_TIMEOUT = old_single_timeout
 
 class _RawData(TypedDict):
     clock: int
@@ -84,7 +112,7 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         self.klipper_mcu = mcu.get_printer_mcu(self.printer, config.get("mcu"))
         self._reactor: Reactor = self.klipper_mcu.get_printer().get_reactor()
         self._stream = KlipperStream[Sample](self, self._reactor)
-        self.dispatch = KlipperTriggerDispatch(self.klipper_mcu)
+        self.dispatch = CartographerTriggerDispatch(self.klipper_mcu)
         self._scheduler = scheduler
 
         self.motion_report = self.printer.load_object(config, "motion_report")
@@ -143,6 +171,7 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
     def start_homing_touch(self, print_time: float, threshold: int) -> ReactorCompletion:
         self._ensure_sensor_ready()
 
+        
         completion = self.dispatch.start(print_time)
 
         self.commands.send_home(
@@ -154,6 +183,7 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
                 trigger_method=TriggerMethod.TOUCH,
             )
         )
+        
         return completion
 
     @override
@@ -161,7 +191,9 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         self.dispatch.wait_end(home_end_time)
         self.commands.send_stop_home()
         result = self.dispatch.stop()
-        if result >= MCU_trsync.REASON_COMMS_TIMEOUT:
+
+        # K2: COMMS_TIMEOUT=2, HOST_REQUEST=3, PAST_END_TIME=4
+        if result == MCU_trsync.REASON_COMMS_TIMEOUT:
             msg = "Communication timeout during homing"
             raise RuntimeError(msg)
         if result != MCU_trsync.REASON_ENDSTOP_HIT:

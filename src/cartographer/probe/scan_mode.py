@@ -148,17 +148,42 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
         with self._mcu.start_session(lambda sample: sample.time >= time) as session:
             session.wait_for(lambda samples: len(samples) >= min_sample_count + skip_count)
         samples = session.get_items()[skip_count:]
-
-        dist = float(
-            np.median(
-                [model.frequency_to_distance(sample.frequency, temperature=sample.temperature) for sample in samples]
+        
+        try:
+            #  vectorized batch processing 
+            distances = self.calculate_sample_distance_batch(samples)
+            dist = float(np.median(distances))
+            
+            logger.info(f"Batch processed {len(samples)} samples, median distance: {dist:.3f}mm")
+            
+            return dist
+        except Exception as e:
+            # If batch method fails, log and fall back to original method
+            logger.error(f"Batch processing failed: {e}, falling back to original method")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Fallback to original method
+            dist = float(
+                np.median(
+                    [model.frequency_to_distance(sample.frequency, temperature=sample.temperature) for sample in samples]
+                )
             )
-        )
-        return dist
+            logger.info(f"Fallback method succeeded: {dist:.3f}mm")
+            return dist
 
     def calculate_sample_distance(self, sample: Sample) -> float:
         model = self.get_model()
         return model.frequency_to_distance(sample.frequency, temperature=sample.temperature)
+
+    def calculate_sample_distance_batch(self, samples: list[Sample]) -> np.ndarray:
+        """
+        Vectorized sample distance calculation for arrays.
+        """
+        model = self.get_model()
+        frequencies = np.array([s.frequency for s in samples])
+        temperatures = np.array([s.temperature for s in samples])
+        return model.frequency_to_distance_batch(frequencies, temperatures=temperatures)
 
     @override
     def query_is_triggered(self, print_time: float) -> bool:

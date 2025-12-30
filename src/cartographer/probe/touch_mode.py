@@ -208,6 +208,9 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             if sample_range > MAX_SAMPLE_RANGE:
                 continue
 
+            # Check for bimodal distribution in all collected samples
+            self._check_for_clusters(collected)
+            
             self._log_sample_stats("Acceptable samples found", best)
             return float(np.median(best))
 
@@ -282,6 +285,41 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
     @override
     def get_endstop_position(self) -> float:
         return self.offset.z
+
+    def _check_for_clusters(self, samples: Sequence[float]) -> None:
+        """Detect if samples form distinct clusters."""
+        if len(samples) < 4:
+            return
+        
+        sorted_samples = sorted(samples)
+        gaps = [sorted_samples[i+1] - sorted_samples[i] for i in range(len(sorted_samples)-1)]
+        
+        # Find largest gap between consecutive samples
+        max_gap = max(gaps)
+        max_gap_idx = gaps.index(max_gap)
+        
+        # If largest gap is >0.03mm, likely indicates two clusters
+        if max_gap > 0.03:
+            cluster1 = sorted_samples[:max_gap_idx+1]
+            cluster2 = sorted_samples[max_gap_idx+1:]
+            
+            # Only warn if BOTH clusters:
+            # 1. Have multiple samples 
+            # 2. Are internally cohesive
+            if len(cluster1) >= 2 and len(cluster2) >= 2:
+                cluster1_range = max(cluster1) - min(cluster1)
+                cluster2_range = max(cluster2) - min(cluster2)
+                
+                # Both clusters must be tightly grouped (<0.05mm range)
+                if cluster1_range < 0.05 and cluster2_range < 0.05:
+                    cluster1_center = float(np.median(cluster1))
+                    cluster2_center = float(np.median(cluster2))
+                    
+                    logger.warning(
+                        "!! Detected distinct sample clusters: ~%.4fmm (%d samples), ~%.4fmm (%d samples)",
+                        cluster1_center, len(cluster1),
+                        cluster2_center, len(cluster2)
+                    )
 
     def _log_sample_stats(
         self,

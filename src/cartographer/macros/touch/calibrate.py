@@ -156,7 +156,7 @@ class TouchCalibrateMacro(Macro):
     @override
     def run(self, params: MacroParams) -> None:
         name = params.get("MODEL", DEFAULT_TOUCH_MODEL_NAME).lower()
-        speed = params.get_int("SPEED", default=2, minval=1, maxval=5)
+        speed = params.get_float("SPEED", default=2.0, minval=1.0, maxval=5.0)
         threshold_start = params.get_int("START", default=500, minval=100)
         threshold_max = params.get_int(
             "MAX",
@@ -405,7 +405,7 @@ class TouchCalibrateMacro(Macro):
         self,
         name: str,
         threshold: int,
-        speed: int,
+        speed: float,
     ) -> None:
         """Save the calibration result and log success."""
         logger.info(

@@ -55,6 +55,30 @@ class KlipperCartographerProbe:
             return self.lift_speed
         return gcmd.get_float("LIFT_SPEED", self.lift_speed, above=0.0)
 
+    def get_lift_speed(self, gcmd: GCodeCommand | None = None):
+        return self._get_lift_speed(gcmd)
+
+    def multi_probe_begin(self):
+        pass
+
+    def multi_probe_end(self):
+        pass
+
+    def run_probe(self, gcmd):
+        """Run a single probe operation"""
+        session = self.start_probe_session(gcmd)
+        session.run_probe(gcmd)
+        results = session.pull_probed_results()
+        session.end_probe_session()
+        if results:
+            return results[0]
+        return [0, 0, 0]
+
+    def probing_move(self, pos, speed):
+        """Compatibility shim - not used by Cartographer"""
+        pass
+
+
     def get_probe_params(self, gcmd: GCodeCommand | None = None):
         return {
             "probe_speed": 5,

@@ -279,9 +279,19 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
     def _process_samples_to_positions(self, grid: MeshGrid, samples: list[Sample], height: float) -> list[Position]:
         """Process samples into final mesh positions."""
         sample_processor = SampleProcessor(grid)
-
-        # Assign samples to grid points
-        results = sample_processor.assign_samples_to_grid(samples, self.probe.scan.calculate_sample_distance)
+        
+        
+        logger.info("Processing %d samples into %dx%d grid...", 
+            len(samples), grid.x_resolution, grid.y_resolution)
+            
+        # Step 1: Compute heights
+        heights = self.probe.scan.calculate_sample_distance_batch(samples)
+            
+        # Step 2: Bin samples to grid
+        results = sample_processor.assign_samples_to_grid_batch(samples, heights)
+            
+        # Step 3: Summary
+        valid_count = sum(1 for r in results if r.sample_count > 0)
 
         # Convert results to positions
         positions = self._results_to_positions(results, height)
