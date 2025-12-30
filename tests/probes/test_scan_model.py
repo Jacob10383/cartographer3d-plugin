@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Union, cast
 
+import numpy as np
 import pytest
 from numpy.polynomial import Polynomial
 from pytest import approx  # pyright: ignore[reportUnknownVariableType]
@@ -96,6 +97,53 @@ def test_frequency_to_distance_out_of_range(model_factory: ScanModelFactory) -> 
 
     assert low_frequency_dist == float("inf")
     assert high_frequency_dist == float("-inf")
+
+
+def test_frequency_to_distance_batch_matches_scalar(model_factory: ScanModelFactory) -> None:
+    model = model_factory(-0.5, None)
+    frequencies = np.array([1 / 3.0, 1 / 2.5, 1 / 5.0, 1 / 500.0, 1000000.0])
+    temperatures = np.array([40.0, 35.0, 55.0, 40.0, 40.0])
+
+    scalar = np.array(
+        [
+            model.frequency_to_distance(float(frequency), temperature=float(temperature))
+            for frequency, temperature in zip(frequencies, temperatures)
+        ]
+    )
+    batch = model.frequency_to_distance_batch(frequencies, temperatures=temperatures)
+
+    finite = np.isfinite(scalar)
+    np.testing.assert_allclose(batch[finite], scalar[finite])
+    np.testing.assert_equal(batch[~finite], scalar[~finite])
+
+
+def test_frequency_to_distance_batch_matches_scalar_with_temperature_compensation(
+    model_factory: ScanModelFactory,
+) -> None:
+    class TempCompensation:
+        def compensate(self, frequency: float, temp_source: float, temp_target: float) -> float:
+            return frequency + (temp_target - temp_source) * 0.001
+
+        def compensate_batch(
+            self, frequencies: np.ndarray, temp_sources: np.ndarray, temp_target: float
+        ) -> np.ndarray:
+            return frequencies + (temp_target - temp_sources) * 0.001
+
+    model = model_factory(-0.5, TempCompensation())
+    frequencies = np.array([1 / 3.0, 1 / 2.5, 1 / 5.0, 1 / 500.0, 1000000.0])
+    temperatures = np.array([40.0, 35.0, 55.0, 30.0, 80.0])
+
+    scalar = np.array(
+        [
+            model.frequency_to_distance(float(frequency), temperature=float(temperature))
+            for frequency, temperature in zip(frequencies, temperatures)
+        ]
+    )
+    batch = model.frequency_to_distance_batch(frequencies, temperatures=temperatures)
+
+    finite = np.isfinite(scalar)
+    np.testing.assert_allclose(batch[finite], scalar[finite])
+    np.testing.assert_equal(batch[~finite], scalar[~finite])
 
 
 def test_compensated_frequency_to_distance(mocker: MockerFixture, model_factory: ScanModelFactory) -> None:

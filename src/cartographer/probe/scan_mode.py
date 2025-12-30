@@ -140,25 +140,20 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
     def measure_distance(
         self, *, time: float | None = None, min_sample_count: int | None = None, skip_count: int = 5
     ) -> float:
-        model = self.get_model()
-
         min_sample_count = min_sample_count or self._config.samples
         time = time or self._toolhead.get_last_move_time()
 
         with self._mcu.start_session(lambda sample: sample.time >= time) as session:
             session.wait_for(lambda samples: len(samples) >= min_sample_count + skip_count)
         samples = session.get_items()[skip_count:]
+        distances = self.calculate_sample_distance_batch(samples)
+        return float(np.median(distances))
 
-        dist = float(
-            np.median(
-                [model.frequency_to_distance(sample.frequency, temperature=sample.temperature) for sample in samples]
-            )
-        )
-        return dist
-
-    def calculate_sample_distance(self, sample: Sample) -> float:
+    def calculate_sample_distance_batch(self, samples: list[Sample]) -> np.ndarray:
         model = self.get_model()
-        return model.frequency_to_distance(sample.frequency, temperature=sample.temperature)
+        frequencies = np.array([s.frequency for s in samples])
+        temperatures = np.array([s.temperature for s in samples])
+        return model.frequency_to_distance_batch(frequencies, temperatures=temperatures)
 
     @override
     def query_is_triggered(self, print_time: float) -> bool:

@@ -131,12 +131,14 @@ def test_endstop_is_triggered(mocker: MockerFixture, probe: Probe):
     probe.scan.measure_distance = mocker.Mock(return_value=1)
 
     assert probe.scan.query_is_triggered(0) is True
+    probe.scan.measure_distance.assert_called_once_with(time=0)
 
 
 def test_endstop_is_not_triggered(mocker: MockerFixture, probe: Probe):
-    probe.scan.measure_distance = mocker.Mock(return_value=1)
+    probe.scan.measure_distance = mocker.Mock(return_value=3)
 
-    assert probe.scan.query_is_triggered(0) is True
+    assert probe.scan.query_is_triggered(0) is False
+    probe.scan.measure_distance.assert_called_once_with(time=0)
 
 
 def test_probe_does_homing_move(mocker: MockerFixture, probe: Probe, toolhead: Toolhead):

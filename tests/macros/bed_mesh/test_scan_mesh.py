@@ -35,9 +35,9 @@ class MockProbe:
         offset: Position
         session: Session[Sample]
 
-        def calculate_sample_distance(self, sample: Sample) -> float:
-            """Mock distance calculation - just return z position."""
-            return sample.position.z if sample.position else 0.0
+        def calculate_sample_distance_batch(self, samples: list[Sample]) -> np.ndarray:
+            """Mock batch distance calculation - just return z positions."""
+            return np.array([sample.position.z if sample.position else 0.0 for sample in samples])
 
         def start_session(self) -> Session[Sample]:
             return self.session
