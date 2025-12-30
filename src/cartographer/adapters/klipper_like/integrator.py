@@ -52,6 +52,7 @@ class KlipperLikeIntegrator(Integrator, ABC):
 
     @override
     def setup(self) -> None:
+        self._printer.register_event_handler("homing:home_rails_begin", self._handle_home_rails_begin)
         self._printer.register_event_handler("homing:home_rails_end", self._handle_home_rails_end)
         self._configure_macro_logger()
 
@@ -86,6 +87,29 @@ class KlipperLikeIntegrator(Integrator, ABC):
     @override
     def register_ready_callback(self, callback: Callable[[], None]) -> None:
         self._printer.register_event_handler("klippy:ready", callback)
+
+    @reraise_for_klipper
+    def _handle_home_rails_begin(self, homing: Homing, rails: Sequence[_Rail]) -> None:
+        """Check if Cartographer MCU is disconnected before Z homing begins."""
+        # Check if we're homing Z
+        if 2 not in homing.get_axes():
+            return
+
+        # Check if any of the endstops is our KlipperEndstop
+        for rail in rails:
+            for endstop, _ in rail.get_endstops():
+                if isinstance(endstop, KlipperEndstop):
+                    # Check if the MCU is disconnected
+                    klipper_mcu = endstop.mcu.klipper_mcu
+                    is_disconnected = (
+                        hasattr(klipper_mcu, 'is_non_critical') and klipper_mcu.is_non_critical and
+                        hasattr(klipper_mcu, 'non_critical_disconnected') and klipper_mcu.non_critical_disconnected
+                    )
+                    if is_disconnected:
+                        mcu_name = klipper_mcu.get_name() if hasattr(klipper_mcu, 'get_name') else 'cartographer'
+                        raise RuntimeError(
+                            f"Cartographer MCU '{mcu_name}' is disconnected - cannot home Z axis"
+                        )
 
     @reraise_for_klipper
     def _handle_home_rails_end(self, homing: Homing, rails: Sequence[_Rail]) -> None:
