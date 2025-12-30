@@ -252,7 +252,6 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             max_window=self._config.max_window,
             sample_range=self._config.sample_range,
         )
-
     def _perform_single_probe(self) -> float:
         model = self.get_model()
         if self._toolhead.get_position().z < self._config.retract_distance:

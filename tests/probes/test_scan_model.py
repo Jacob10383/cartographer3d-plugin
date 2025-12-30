@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Union, cast
 
+import numpy as np
 import pytest
 from numpy.polynomial import Polynomial
 from pytest import approx  # pyright: ignore[reportUnknownVariableType]
@@ -96,6 +97,22 @@ def test_frequency_to_distance_out_of_range(model_factory: ScanModelFactory) -> 
 
     assert low_frequency_dist == float("inf")
     assert high_frequency_dist == float("-inf")
+
+
+def test_frequency_to_distance_batch_matches_scalar(model_factory: ScanModelFactory) -> None:
+    model = model_factory(-0.5, None)
+    frequencies = np.array([1 / 3.0, 1 / 2.5, 1 / 5.0, 1 / 500.0, 1000000.0])
+    temperatures = np.array([40.0, 35.0, 55.0, 40.0, 40.0])
+
+    scalar = np.array(
+        [
+            model.frequency_to_distance(float(frequency), temperature=float(temperature))
+            for frequency, temperature in zip(frequencies, temperatures)
+        ]
+    )
+    batch = model.frequency_to_distance_batch(frequencies, temperatures=temperatures)
+
+    np.testing.assert_allclose(batch, scalar)
 
 
 def test_compensated_frequency_to_distance(mocker: MockerFixture, model_factory: ScanModelFactory) -> None:

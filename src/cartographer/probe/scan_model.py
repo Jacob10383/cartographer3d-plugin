@@ -24,12 +24,21 @@ DEGREES = 9
 
 class TemperatureCompensationModel(Protocol):
     def compensate(self, frequency: float, temp_source: float, temp_target: float) -> float: ...
+    def compensate_batch(
+        self, frequencies: np.ndarray, temp_sources: np.ndarray, temp_target: float
+    ) -> np.ndarray: ...
 
 
 class _NoTemperatureCompensationModel(TemperatureCompensationModel):
     @override
     def compensate(self, frequency: float, temp_source: float, temp_target: float) -> float:
         return frequency
+
+    @override
+    def compensate_batch(
+        self, frequencies: np.ndarray, temp_sources: np.ndarray, temp_target: float
+    ) -> np.ndarray:
+        return frequencies
 
 
 class ScanModel:
@@ -84,6 +93,19 @@ class ScanModel:
             )
         )
 
+    def frequency_to_distance_batch(
+        self, frequencies: np.ndarray, *, temperatures: np.ndarray
+    ) -> np.ndarray:
+        """
+        Vectorized frequency to distance conversion for arrays.
+        """
+        compensated = self.temperature_compensation.compensate_batch(
+            frequencies,
+            temperatures,
+            temp_target=self.config.reference_temperature,
+        )
+        return self._raw_frequency_to_distance_batch(compensated)
+
     def _raw_frequency_to_distance(self, frequency: float) -> float:
         lower_bound, upper_bound = self.config.domain
         inverse_frequency = 1 / frequency
@@ -94,6 +116,20 @@ class ScanModel:
             return float("-inf")
 
         return self._eval(inverse_frequency) + self.config.z_offset
+
+    def _raw_frequency_to_distance_batch(self, frequencies: np.ndarray) -> np.ndarray:
+        """Vectorized version of _raw_frequency_to_distance."""
+        lower_bound, upper_bound = self.config.domain
+        inverse_frequencies = 1 / frequencies
+
+        # Polynomial evaluation already works on arrays
+        distances = self._poly(inverse_frequencies) + self.config.z_offset
+
+        # Handle out-of-range values
+        distances = np.where(inverse_frequencies > upper_bound, np.inf, distances)
+        distances = np.where(inverse_frequencies < lower_bound, -np.inf, distances)
+
+        return distances
 
     def distance_to_frequency(self, distance: float, *, temperature: float) -> float:
         frequency = self._distance_to_raw_frequency(distance)

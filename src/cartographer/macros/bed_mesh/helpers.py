@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import cached_property
 from math import ceil
 from typing import TYPE_CHECKING, Callable, Sequence, final, overload
 
@@ -51,14 +52,14 @@ class MeshGrid(Region):
             msg = f"Grid resolution must be at least {MIN_GRID_RESOLUTION}x{MIN_GRID_RESOLUTION}"
             raise ValueError(msg)
 
-    @property
+    @cached_property
     def x_coords(self) -> NDArray[np.float_]:
-        """Get array of x coordinates."""
+        """Get array of x coordinates (cached)."""
         return np.round(np.linspace(self.min_point[0], self.max_point[0], self.x_resolution), 2)
 
-    @property
+    @cached_property
     def y_coords(self) -> NDArray[np.float_]:
-        """Get array of y coordinates."""
+        """Get array of y coordinates (cached)."""
         return np.round(np.linspace(self.min_point[1], self.max_point[1], self.y_resolution), 2)
 
     @property
@@ -115,7 +116,10 @@ class SampleProcessor:
         samples: list[Sample],
         calculate_height: Callable[[Sample], float],
     ) -> list[GridPointResult]:
-        """Assign samples to grid points and calculate median heights."""
+        """Assign samples to grid points and calculate median heights.
+        
+        NOTE: For better performance, use assign_samples_to_grid_batch() instead.
+        """
         accumulator: dict[tuple[int, int], list[float]] = defaultdict(list)
         sample_points = [
             (sample.position.x, sample.position.y, sample) for sample in samples if sample.position is not None
@@ -147,6 +151,148 @@ class SampleProcessor:
                 z = float(np.median(values)) if values else np.nan
                 results.append(GridPointResult(point=grid_point, z=z, sample_count=count))
 
+        return results
+
+    def assign_samples_to_grid_batch(
+        self,
+        samples: list[Sample],
+        heights: np.ndarray,
+    ) -> list[GridPointResult]:
+        """
+        Vectorized assignment of samples to grid points.
+        Heights array must correspond 1:1 with samples list.
+        """
+        EPSILON = 1e-2  # Match original Region.contains_point epsilon
+        
+        original_count = len(samples)
+        
+        # Filter samples with valid positions
+        valid_mask = np.array([s.position is not None for s in samples])
+        valid_samples = [s for s, v in zip(samples, valid_mask) if v]
+        valid_heights = heights[valid_mask]
+        
+        invalid_pos_count = original_count - len(valid_samples)
+        
+        if len(valid_samples) == 0:
+            return self._build_empty_results()
+        
+        # Extract coordinates as arrays
+        xs = np.array([s.position.x for s in valid_samples])  # type: ignore[union-attr]
+        ys = np.array([s.position.y for s in valid_samples])  # type: ignore[union-attr]
+        
+        # Filter out inf/-inf heights (out of model range)
+        finite_mask = np.isfinite(valid_heights)
+        infinite_height_count = len(valid_samples) - int(np.sum(finite_mask))
+        
+        xs = xs[finite_mask]
+        ys = ys[finite_mask]
+        valid_heights = valid_heights[finite_mask]
+        
+        if len(xs) == 0:
+            return self._build_empty_results()
+        
+        # Vectorized bounds check WITH EPSILON TOLERANCE (matching original)
+        in_bounds = (
+            (xs >= self.grid.min_point[0] - EPSILON) & (xs <= self.grid.max_point[0] + EPSILON) &
+            (ys >= self.grid.min_point[1] - EPSILON) & (ys <= self.grid.max_point[1] + EPSILON)
+        )
+        
+        out_of_bounds_count = len(xs) - int(np.sum(in_bounds))
+        
+        xs = xs[in_bounds]
+        ys = ys[in_bounds]
+        valid_heights = valid_heights[in_bounds]
+        
+        if len(xs) == 0:
+            return self._build_empty_results()
+        
+        # Vectorized grid index calculation
+        i_indices = np.round((xs - self.grid.min_point[0]) / self.grid.x_step).astype(np.int32)
+        j_indices = np.round((ys - self.grid.min_point[1]) / self.grid.y_step).astype(np.int32)
+        
+        # Clamp to valid range (handles edge cases from epsilon tolerance)
+        i_indices = np.clip(i_indices, 0, self.grid.x_resolution - 1)
+        j_indices = np.clip(j_indices, 0, self.grid.y_resolution - 1)
+        
+        # Vectorized distance check
+        grid_xs = self.grid.x_coords[i_indices]
+        grid_ys = self.grid.y_coords[j_indices]
+        distances = np.hypot(xs - grid_xs, ys - grid_ys)
+        close_enough = distances <= self.max_distance
+        
+        too_far_count = len(i_indices) - int(np.sum(close_enough))
+        
+        i_indices = i_indices[close_enough]
+        j_indices = j_indices[close_enough]
+        valid_heights = valid_heights[close_enough]
+        
+        logger.info(
+            "Filtered samples: %d invalid positions, %d infinite heights, %d out of bounds, %d too far from grid → %d/%d samples used",
+            invalid_pos_count, infinite_height_count, out_of_bounds_count, too_far_count, len(i_indices), original_count
+        )
+        
+        # Flatten 2D grid indices to 1D for efficient grouping
+        flat_indices = j_indices * self.grid.x_resolution + i_indices
+        
+        # Build results using grouped median
+        results = self._compute_grid_medians(flat_indices, valid_heights)
+        
+        # Count grid points with no samples
+        empty_count = sum(1 for r in results if r.sample_count == 0)
+        if empty_count > 0:
+            logger.warning(
+                "WARNING: %d/%d grid points have no samples assigned",
+                empty_count, len(results)
+            )
+        
+        return results
+    
+    def _build_empty_results(self) -> list[GridPointResult]:
+        """Build results for empty sample set."""
+        results: list[GridPointResult] = []
+        for j in range(self.grid.y_resolution):
+            for i in range(self.grid.x_resolution):
+                grid_point = self.grid.grid_index_to_point(j, i)
+                results.append(GridPointResult(point=grid_point, z=np.nan, sample_count=0))
+        return results
+    
+    def _compute_grid_medians(
+        self, flat_indices: np.ndarray, heights: np.ndarray
+    ) -> list[GridPointResult]:
+        """Compute median heights for each grid cell."""
+        total_cells = self.grid.x_resolution * self.grid.y_resolution
+        
+        # Sort by flat index for efficient grouping
+        sort_order = np.argsort(flat_indices)
+        sorted_indices = flat_indices[sort_order]
+        sorted_heights = heights[sort_order]
+        
+        # Find unique indices and their boundaries
+        unique_indices, first_occurrence, counts = np.unique(
+            sorted_indices, return_index=True, return_counts=True
+        )
+        
+        # Create lookup for median and count per cell
+        medians = np.full(total_cells, np.nan)
+        sample_counts = np.zeros(total_cells, dtype=np.int32)
+        
+        for idx, first, count in zip(unique_indices, first_occurrence, counts):
+            cell_heights = sorted_heights[first : first + count]
+            medians[idx] = np.median(cell_heights)
+            sample_counts[idx] = count
+        
+        # Build results in y-major order (j varies slowest)
+        results: list[GridPointResult] = []
+        for j in range(self.grid.y_resolution):
+            for i in range(self.grid.x_resolution):
+                flat_idx = j * self.grid.x_resolution + i
+                grid_point = self.grid.grid_index_to_point(j, i)
+                results.append(GridPointResult(
+                    point=grid_point,
+                    z=float(medians[flat_idx]),
+                    sample_count=int(sample_counts[flat_idx]),
+                ))
+        
         return results
 
 
