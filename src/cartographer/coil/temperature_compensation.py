@@ -113,3 +113,72 @@ class CoilTemperatureCompensationModel(TemperatureCompensationModel):
         else:
             # Linear fallback when param_a is effectively zero
             return param_b * temp_target + ax + ref_freq
+
+    def compensate_batch(
+        self,
+        frequencies: np.ndarray,
+        temp_sources: np.ndarray,
+        temp_target: float,
+    ) -> np.ndarray:
+        """
+        Vectorized temperature compensation for arrays of frequencies and temperatures.
+
+        """
+        ref_freq = self.coil_reference.min_frequency
+        freq_offsets = frequencies - ref_freq
+
+        # Vectorized parameter interpolation: param_linear(x, a, b) = a * x + b
+        param_a_interp = self.a_a * freq_offsets + self.a_b
+        param_b_interp = self.b_a * freq_offsets + self.b_b
+
+        # Vectorized quadratic coefficients
+        temp_sq = temp_sources**2
+
+        quad_a = (
+            4 * (temp_sources * self.a_a) ** 2
+            + 4 * temp_sources * self.a_a * self.b_a
+            + self.b_a**2
+            + 4 * self.a_a
+        )
+
+        quad_b = (
+            8 * temp_sq * self.a_a * self.a_b
+            + 4 * temp_sources * (self.a_a * self.b_b + self.a_b * self.b_a)
+            + 2 * self.b_a * self.b_b
+            + 4 * self.a_b
+            - 4 * freq_offsets * self.a_a
+        )
+
+        quad_c = (
+            4 * (temp_sources * self.a_b) ** 2
+            + 4 * temp_sources * self.a_b * self.b_b
+            + self.b_b**2
+            - 4 * freq_offsets * self.a_b
+        )
+
+        discriminants = quad_b**2 - 4 * quad_a * quad_c
+
+        # Linear compensation path (discriminant < 0)
+        param_c_linear = frequencies - param_a_interp * temp_sq - param_b_interp * temp_sources
+        linear_result = param_a_interp * temp_target**2 + param_b_interp * temp_target + param_c_linear
+
+        safe_discriminants = np.maximum(discriminants, 0)
+        ax = (np.sqrt(safe_discriminants) - quad_b) / (2 * quad_a)
+
+        param_a_quad = self.a_a * ax + self.a_b
+        param_b_quad = self.b_a * ax + self.b_b
+
+        # Handle the param_a near-zero case with np.where
+        temp_offset = np.where(
+            np.abs(param_a_quad) > 1e-12,
+            param_b_quad / (2 * param_a_quad),
+            0.0,
+        )
+        quadratic_result = np.where(
+            np.abs(param_a_quad) > 1e-12,
+            param_a_quad * (temp_target + temp_offset) ** 2 + ax + ref_freq,
+            param_b_quad * temp_target + ax + ref_freq,
+        )
+
+        # Select between linear and quadratic based on discriminant
+        return np.where(discriminants < 0, linear_result, quadratic_result)

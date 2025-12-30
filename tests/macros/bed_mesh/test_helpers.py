@@ -193,6 +193,46 @@ class TestSampleProcessor:
         assert result_00.z == 2.0  # Median of [1.0, 2.0, 3.0]
         assert result_00.sample_count == 3
 
+    def test_assign_samples_batch_matches_scalar_for_finite_heights(self):
+        strict_processor = SampleProcessor(grid, max_distance=0.2)
+        samples = [
+            mock_sample(Position(0.0, 0.0, 1.0)),
+            mock_sample(Position(0.05, 0.05, 3.0)),
+            mock_sample(Position(5.0, 5.0, 10.0)),
+            mock_sample(Position(5.5, 5.5, 99.0)),  # Too far from nearest grid point
+            mock_sample(Position(-1.0, 5.0, 7.0)),  # Out of bounds
+            mock_sample(None),
+        ]
+        heights = np.array([1.0, 3.0, 10.0, 99.0, 7.0, 123.0])
+
+        scalar = strict_processor.assign_samples_to_grid(
+            samples,
+            lambda sample: sample.position.z if sample.position is not None else float("nan"),
+        )
+        batch = strict_processor.assign_samples_to_grid_batch(samples, heights)
+
+        assert len(batch) == len(scalar)
+        for scalar_result, batch_result in zip(scalar, batch):
+            assert batch_result.point == scalar_result.point
+            assert batch_result.sample_count == scalar_result.sample_count
+            if np.isnan(scalar_result.z):
+                assert np.isnan(batch_result.z)
+            else:
+                assert batch_result.z == scalar_result.z
+
+    def test_assign_samples_batch_ignores_nonfinite_heights(self):
+        samples = [
+            mock_sample(Position(0.0, 0.0, 0.0)),
+            mock_sample(Position(0.0, 0.0, 0.0)),
+            mock_sample(Position(0.0, 0.0, 0.0)),
+        ]
+
+        results = processor.assign_samples_to_grid_batch(samples, np.array([1.0, np.inf, 2.0]))
+
+        result_00 = next(r for r in results if r.point == (0.0, 0.0))
+        assert result_00.sample_count == 2
+        assert result_00.z == 1.5
+
 
 transformer = CoordinateTransformer(probe_offset=Position(2.0, 1.0, 0))
 

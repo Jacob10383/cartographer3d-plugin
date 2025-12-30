@@ -415,7 +415,7 @@ class TouchCalibrateMacro(Macro):
         self,
         name: str,
         threshold: int,
-        speed: int,
+        speed: float,
     ) -> None:
         """Save the calibration result and log success."""
         logger.info(
