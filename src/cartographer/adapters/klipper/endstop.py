@@ -85,6 +85,14 @@ class KlipperEndstop(MCU_endstop):
     @override
     @reraise_for_klipper
     def query_endstop(self, print_time: float) -> int:
+        # If MCU is disconnected, report as not triggered 
+        klipper_mcu = self.mcu.klipper_mcu
+        is_disconnected = (
+            hasattr(klipper_mcu, 'is_non_critical') and klipper_mcu.is_non_critical and
+            hasattr(klipper_mcu, 'non_critical_disconnected') and klipper_mcu.non_critical_disconnected
+        )
+        if is_disconnected:
+            return 1 
         return 1 if self.endstop.query_is_triggered(print_time) else 0
 
     @override

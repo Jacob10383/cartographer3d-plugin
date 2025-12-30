@@ -94,6 +94,18 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
 
         self.last_z_result: float | None = None
 
+    def _check_mcu_disconnected(self) -> bool:
+        """Check if the MCU is disconnected n safe for non-critical MCU feature.
+        
+        """
+        # Access the underlying klipper_mcu if available (for KlipperCartographerMcu)
+        klipper_mcu = getattr(self._mcu, 'klipper_mcu', None)
+        if klipper_mcu is None:
+            return False
+        is_non_critical = hasattr(klipper_mcu, 'is_non_critical') and klipper_mcu.is_non_critical
+        is_disconnected = hasattr(klipper_mcu, 'non_critical_disconnected') and klipper_mcu.non_critical_disconnected
+        return is_non_critical and is_disconnected
+
     @override
     def get_compensation_model(self) -> TemperatureCompensationModel | None:
         return self._temperature_compensation
@@ -154,8 +166,6 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
             distances = self.calculate_sample_distance_batch(samples)
             dist = float(np.median(distances))
             
-            logger.info(f"Batch processed {len(samples)} samples, median distance: {dist:.3f}mm")
-            
             return dist
         except Exception as e:
             # If batch method fails, log and fall back to original method
@@ -187,6 +197,9 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
 
     @override
     def query_is_triggered(self, print_time: float) -> bool:
+        # If MCU is disconnected, report as not triggered (safe state)
+        if self._check_mcu_disconnected():
+            return False
         if not self.has_model():
             return True  # No model loaded, assume triggered
         distance = self.measure_distance(time=print_time)

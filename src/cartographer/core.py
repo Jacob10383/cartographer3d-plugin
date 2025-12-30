@@ -84,7 +84,21 @@ class PrinterCartographer:
         # Register all macros
         self.macros = self._create_macro_registrations(probe, toolhead, adapters)
 
+        # Register for MCU reconnect event to load models if we started disconnected
+        klipper_mcu = self.mcu.klipper_mcu
+        if hasattr(klipper_mcu, 'is_non_critical') and klipper_mcu.is_non_critical:
+            mcu_name = klipper_mcu.get_name() if hasattr(klipper_mcu, 'get_name') else 'cartographer'
+            reconnect_event = "non_critical_mcu_%s:reconnected" % mcu_name
+            adapters.printer.register_event_handler(reconnect_event, self._handle_mcu_reconnect)
+
     def ready_callback(self) -> None:
+        # Skip if non-critical MCU is disconnected
+        klipper_mcu = self.mcu.klipper_mcu
+        if hasattr(klipper_mcu, 'is_non_critical') and klipper_mcu.is_non_critical:
+            if hasattr(klipper_mcu, 'non_critical_disconnected') and klipper_mcu.non_critical_disconnected:
+                logger.info("[CARTO_NONCRIT] ready_callback: Skipping - MCU disconnected")
+                return
+        
         validate_and_remove_incompatible_models(self.config, self.mcu.get_mcu_version())
 
         if DEFAULT_SCAN_MODEL_NAME in self.config.scan.models:
@@ -92,6 +106,20 @@ class PrinterCartographer:
 
         if DEFAULT_TOUCH_MODEL_NAME in self.config.touch.models:
             self.touch_mode.load_model(DEFAULT_TOUCH_MODEL_NAME)
+
+    def _handle_mcu_reconnect(self) -> None:
+        """Handle MCU reconnect event - load models that were skipped during startup."""
+        logger.info("[CARTO_NONCRIT] MCU reconnected, loading models")
+        
+        validate_and_remove_incompatible_models(self.config, self.mcu.get_mcu_version())
+
+        if DEFAULT_SCAN_MODEL_NAME in self.config.scan.models:
+            self.scan_mode.load_model(DEFAULT_SCAN_MODEL_NAME)
+            logger.info("[CARTO_NONCRIT] Loaded scan model: %s", DEFAULT_SCAN_MODEL_NAME)
+
+        if DEFAULT_TOUCH_MODEL_NAME in self.config.touch.models:
+            self.touch_mode.load_model(DEFAULT_TOUCH_MODEL_NAME)
+            logger.info("[CARTO_NONCRIT] Loaded touch model: %s", DEFAULT_TOUCH_MODEL_NAME)
 
     def _register_macro(self, name: str, macro: Macro, use_prefix: bool = True) -> list[MacroRegistration]:
         """Register a macro with optional prefixing."""

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, TypedDict, final
 
+import chelper
 import mcu
 from mcu import MCU_trsync
 from mcu import TriggerDispatch as KlipperTriggerDispatch
@@ -65,6 +66,35 @@ class CartographerTriggerDispatch(KlipperTriggerDispatch):
             # Restore original timeout values so other endstops aren't affected
             mcu_module.TRSYNC_TIMEOUT = old_timeout
             mcu_module.TRSYNC_SINGLE_MCU_TIMEOUT = old_single_timeout
+
+    def reinit_after_reconnect(self):
+        """Re-initialize MCU-dependent state after reconnect.
+
+        1. Create a new trdispatch FFI object
+        2. Update each existing trsync's _trdispatch reference
+        3. Recreate each trsync's _trdispatch_mcu FFI object
+        """
+        # Re-create FFI dispatch object
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
+        
+        # Update ALL existing trsyncs with new dispatch
+        for ts in self._trsyncs:
+            mcu_obj = ts.get_mcu()
+            mcu_name = mcu_obj.get_name()
+            oid = getattr(ts, '_oid', 'N/A')
+            
+            # Update the dispatch reference
+            ts._trdispatch = self._trdispatch
+            
+            # Recreate the _trdispatch_mcu FFI object with new dispatch but existing OID/commands
+            set_timeout_tag = mcu_obj.lookup_command_tag("trsync_set_timeout oid=%c clock=%u") & 0xffffffff
+            trigger_tag = mcu_obj.lookup_command_tag("trsync_trigger oid=%c reason=%c") & 0xffffffff
+            state_tag = mcu_obj.lookup_command_tag("trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u") & 0xffffffff
+            ts._trdispatch_mcu = ffi_main.gc(ffi_lib.trdispatch_mcu_alloc(
+                self._trdispatch, mcu_obj._serial.serialqueue,
+                ts._cmd_queue, ts._oid & 0xffffffff, set_timeout_tag, trigger_tag, state_tag), ffi_lib.free)
+        
 
 class _RawData(TypedDict):
     clock: int
@@ -128,6 +158,15 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         self.printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         self.klipper_mcu.register_config_callback(self._initialize)
 
+        # Register for non-critical MCU disconnect/reconnect events
+        # These events are sent by the patched mcu.py when a non-critical MCU disconnects/reconnects
+        mcu_name = self.klipper_mcu.get_name() if hasattr(self.klipper_mcu, 'get_name') else 'cartographer'
+        disconnect_event = "non_critical_mcu_%s:disconnected" % mcu_name
+        reconnect_event = "non_critical_mcu_%s:reconnected" % mcu_name
+    
+        self.printer.register_event_handler(disconnect_event, self._handle_mcu_disconnect)
+        self.printer.register_event_handler(reconnect_event, self._handle_mcu_reconnect)
+
     @override
     def get_status(self, eventtime: float) -> dict[str, object]:
         return {
@@ -140,10 +179,12 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         return self._stream.last_item
 
     def _initialize(self) -> None:
+        # Skip if non-critical MCU is disconnected
+        if self._check_mcu_disconnected():
+            return
         self._constants = KlipperCartographerConstants(self.klipper_mcu)
         self._commands = KlipperCartographerCommands(self.klipper_mcu)
         self.klipper_mcu.register_response(self._handle_data, "cartographer_data")
-        logger.info("Initialized %s MCU", self.klipper_mcu.get_status()["mcu_version"])
 
     @override
     def get_mcu_version(self) -> str:
@@ -151,6 +192,8 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
 
     @override
     def start_homing_scan(self, print_time: float, frequency: float) -> ReactorCompletion:
+        # Raise error if MCU is disconnected - homing requires active connection
+        self._check_mcu_connected_or_raise()
         self._ensure_sensor_ready()
 
         self._set_threshold(frequency)
@@ -169,9 +212,10 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
 
     @override
     def start_homing_touch(self, print_time: float, threshold: int) -> ReactorCompletion:
+        # Raise error if MCU is disconnected - homing requires active connection
+        self._check_mcu_connected_or_raise()
         self._ensure_sensor_ready()
 
-        
         completion = self.dispatch.start(print_time)
 
         self.commands.send_home(
@@ -189,9 +233,13 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
     @override
     def stop_homing(self, home_end_time: float) -> float:
         self.dispatch.wait_end(home_end_time)
-        self.commands.send_stop_home()
-        result = self.dispatch.stop()
+        
+        # Only send stop command if MCU is connected
+        if not self._check_mcu_disconnected():
+            self.commands.send_stop_home()
 
+        result = self.dispatch.stop()
+        
         # K2: COMMS_TIMEOUT=2, HOST_REQUEST=3, PAST_END_TIME=4
         if result == MCU_trsync.REASON_COMMS_TIMEOUT:
             msg = "Communication timeout during homing"
@@ -216,11 +264,15 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
 
     @override
     def start_streaming(self) -> None:
+        # Raise error if MCU is disconnected - streaming requires active connection
+        self._check_mcu_connected_or_raise()
         self.commands.send_stream_state(enable=True)
 
     @override
     def stop_streaming(self) -> None:
-        self.commands.send_stream_state(enable=False)
+        # Only send stop command if MCU is connected
+        if not self._check_mcu_disconnected():
+            self.commands.send_stream_state(enable=False)
 
     @override
     def get_current_time(self) -> float:
@@ -232,16 +284,82 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
 
         self.commands.send_threshold(ThresholdCommand(trigger, untrigger))
 
+    def _check_mcu_disconnected(self) -> bool:
+        """Check if the MCU is a non-critical MCU that is currently disconnected.
+        
+        Returns True if the MCU is disconnected (and commands should be skipped),
+        False if the MCU is connected and commands can proceed.
+        
+        Safe to call even if MCU doesn't support non-critical feature.
+        """
+        is_non_critical = hasattr(self.klipper_mcu, 'is_non_critical') and self.klipper_mcu.is_non_critical
+        is_disconnected = hasattr(self.klipper_mcu, 'non_critical_disconnected') and self.klipper_mcu.non_critical_disconnected
+        return is_non_critical and is_disconnected
+
+    def _check_mcu_connected_or_raise(self) -> None:
+        """Check if the MCU is connected and raise an error if not.
+        
+        This should be used for operations that require the MCU to be connected.
+        Raises a RuntimeError if the non-critical MCU is disconnected.
+        """
+        if self._check_mcu_disconnected():
+            mcu_name = self.klipper_mcu.get_name() if hasattr(self.klipper_mcu, 'get_name') else 'cartographer'
+            raise RuntimeError(f"Cartographer MCU '{mcu_name}' is disconnected")
+
+    def _handle_mcu_disconnect(self) -> None:
+        """Handle non-critical MCU disconnect event.
+        
+        Called when the Cartographer MCU disconnects. Updates internal state
+        to prevent commands being sent to disconnected MCU.
+        """
+        # Clear streaming state - MCU is gone so we can't send commands
+        self._stream.sessions.clear()
+        self._sensor_ready = False
+
+    def _handle_mcu_reconnect(self) -> None:
+        """Handle non-critical MCU reconnect event.
+        
+        Called when the Cartographer MCU reconnects. Re-initializes the
+        state and applies threshold if a model is loaded.
+        """
+        
+        mcu_name = self.klipper_mcu.get_name() if hasattr(self.klipper_mcu, 'get_name') else 'unknown'
+        is_disconnected = getattr(self.klipper_mcu, 'non_critical_disconnected', 'N/A')
+        
+        # Force re-initialize MCU-dependent state (bypass disconnect guard)
+        # The MCU just reconnected so we MUST rebuild commands with new command queue
+        self._constants = KlipperCartographerConstants(self.klipper_mcu)
+        # Manually call _initialize_constants since config callbacks don't fire post-config
+        self._constants._initialize_constants()
+        
+        
+        self._commands = KlipperCartographerCommands(self.klipper_mcu)
+        self.klipper_mcu.register_response(self._handle_data, "cartographer_data")
+        
+        # Re-initialize the dispatch's trsync FFI objects
+        self.dispatch.reinit_after_reconnect()
+        
+        # Reset sensor ready flag so it will be checked again
+        self._sensor_ready = False
+        
+
     def _handle_mcu_identify(self) -> None:
+        # Skip if non-critical MCU is disconnected
+        if self._check_mcu_disconnected():
+            return
         for stepper in self.kinematics.get_steppers():
             if stepper.is_active_axis("z"):
                 self.dispatch.add_stepper(stepper)
 
     def _handle_connect(self) -> None:
-        self.stop_streaming()
+        # Skip sending stop_streaming if MCU is disconnected
+        if not self._check_mcu_disconnected():
+            self.stop_streaming()
 
     def _handle_shutdown(self) -> None:
-        self.stop_streaming()
+        # Skip sending stop_streaming if MCU is disconnected
+        if not self._check_mcu_disconnected():
+            self.stop_streaming()
 
     def _handle_data(self, data: _RawData) -> None:
         """
@@ -275,8 +393,17 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         clock = self.klipper_mcu.clock32_to_clock64(data["clock"])
         time = self.klipper_mcu.clock_to_print_time(clock)
 
+        if time < 0:
+            return
+
         frequency = self.constants.count_to_frequency(count)
         temperature = self.constants.calculate_temperature(data["temp"])
+        
+ 
+        if temperature < -20 or temperature > 200:
+            logger.debug("Skipping sample with invalid temperature: %.1f", temperature)
+            return
+        
         position = self.get_requested_position(time)
 
         sample = Sample(
