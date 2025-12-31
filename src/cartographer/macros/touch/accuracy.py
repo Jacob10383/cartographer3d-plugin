@@ -26,6 +26,8 @@ class TouchAccuracyParams:
     lift_speed: float = param("Lift speed in mm/s", default=config_ref(GeneralConfig, "lift_speed"), min=1)
     sample_retract_dist: float = param("Retract distance between samples", default=1.0, min=1.0)
     samples: int = param("Number of probe samples", default=5, min=3)
+    threshold: int | None = param("Touch threshold override", default=None, min=1)
+    speed: float | None = param("Probe speed override in mm/s", default=None, min=0.001)
 
 
 @final
@@ -41,21 +43,31 @@ class TouchAccuracyMacro(Macro):
     def run(self, params: MacroParams) -> None:
         p = parse(TouchAccuracyParams, params, lift_speed=self._lift_speed)
         position = self._toolhead.get_position()
+        model = self._probe.get_model()
+        effective_threshold = p.threshold if p.threshold is not None else model.threshold
+        effective_speed = p.speed if p.speed is not None else model.speed
 
         logger.info(
-            "touch accuracy at X:%.3f Y:%.3f Z:%.3f (samples=%d retract=%.3f lift_speed=%.1f)",
+            "touch accuracy at X:%.3f Y:%.3f Z:%.3f (samples=%d retract=%.3f lift_speed=%.1f threshold=%d speed=%.1f)",
             position.x,
             position.y,
             position.z,
             p.samples,
             p.sample_retract_dist,
             p.lift_speed,
+            effective_threshold,
+            effective_speed,
         )
 
         self._toolhead.move(z=position.z + p.sample_retract_dist, speed=p.lift_speed)
         measurements: list[float] = []
         while len(measurements) < p.samples:
-            trigger_pos = self._probe.perform_probe()
+            trigger_pos = self._probe.perform_probe(
+                threshold_override=p.threshold,
+                speed_override=p.speed,
+                log_sequence_start=len(measurements) == 0,
+                log_touch_settings=False,
+            )
             measurements.append(trigger_pos)
             pos = self._toolhead.get_position()
             self._toolhead.move(z=pos.z + p.sample_retract_dist, speed=p.lift_speed)
