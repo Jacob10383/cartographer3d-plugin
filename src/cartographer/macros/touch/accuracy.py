@@ -30,22 +30,26 @@ class TouchAccuracyMacro(Macro):
         lift_speed = params.get_float("LIFT_SPEED", self._lift_speed, above=0)
         retract = params.get_float("SAMPLE_RETRACT_DIST", 1.0, minval=1)
         sample_count = params.get_int("SAMPLES", 5, minval=3)
+        threshold_override = params.get_int("THRESHOLD", None, minval=1)
+        speed_override = params.get_float("SPEED", None, above=0)
         position = self._toolhead.get_position()
 
         logger.info(
-            "touch accuracy at X:%.3f Y:%.3f Z:%.3f (samples=%d retract=%.3f lift_speed=%.1f)",
+            "touch accuracy at X:%.3f Y:%.3f Z:%.3f (samples=%d retract=%.3f lift_speed=%.1f threshold=%s speed=%s)",
             position.x,
             position.y,
             position.z,
             sample_count,
             retract,
             lift_speed,
+            str(threshold_override) if threshold_override else "model",
+            f"{speed_override:.1f}" if speed_override else "model",
         )
 
         self._toolhead.move(z=position.z + retract, speed=lift_speed)
         measurements: list[float] = []
         while len(measurements) < sample_count:
-            trigger_pos = self._probe.perform_probe()
+            trigger_pos = self._probe.perform_probe(threshold_override, speed_override)
             measurements.append(trigger_pos)
             pos = self._toolhead.get_position()
             self._toolhead.move(z=pos.z + retract, speed=lift_speed)

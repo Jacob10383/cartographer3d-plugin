@@ -162,7 +162,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         }
 
     @override
-    def perform_probe(self) -> float:
+    def perform_probe(self, threshold_override: int | None = None, speed_override: float | None = None) -> float:
         if not self._toolhead.is_homed("z"):
             msg = "Z axis must be homed before probing"
             raise RuntimeError(msg)
@@ -171,31 +171,64 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             self._toolhead.move(z=5, speed=5)
         self._toolhead.wait_moves()
 
-        self.last_z_result = self._run_probe()
+        self.last_z_result = self._run_probe(threshold_override, speed_override)
         return self.last_z_result
 
-    def _run_probe(self) -> float:
+    def _run_probe(self, threshold_override: int | None = None, speed_override: float | None = None) -> float:
         """
         Collect touch samples and find a consistent subset.
 
         Collects samples one at a time, checking after each if there's
         a subset of the required size where all samples are within
         the acceptable range.
+        
+        Args:
+            threshold_override: Optional threshold value to use instead of model threshold.
+            speed_override: Optional speed value to use instead of model speed.
         """
         collected: list[float] = []
         required_samples = self._config.samples
         max_samples = self._config.max_samples
-
-        logger.debug(
+        model = self.get_model()
+        
+        # Determine effective values (override or model)
+        threshold = threshold_override if threshold_override is not None else model.threshold
+        speed = speed_override if speed_override is not None else model.speed
+        z_offset = model.z_offset
+        
+        logger.info(
             "Starting touch sequence for %d samples within %d touches...",
             required_samples,
             max_samples,
         )
+        logger.info(
+            "Touch settings: threshold %d%s, speed %.1f mm/s%s, z_offset %.3f mm",
+            threshold,
+            " (override)" if threshold_override else " (model)",
+            speed,
+            " (override)" if speed_override else " (model)",
+            z_offset,
+        )
 
-        for i in range(max_samples):
-            trigger_pos = self._perform_single_probe()
+        touch_count = 0
+        while touch_count < max_samples:
+            trigger_pos = self._perform_single_probe(threshold_override, speed_override)
+            
+            # Filter out false triggers on retract move
+            # If this sample is exactly RETRACT_DISTANCE from the previous, it's a phantom trigger
+            if collected:
+                last_sample = collected[-1]
+                delta = abs(trigger_pos - last_sample)
+                if abs(delta - RETRACT_DISTANCE) < 0.01:  # Within 0.01mm of exact retract distance
+                    logger.warning(
+                        "!! Phantom trigger ignored: %.4f (exactly +%.1fmm from previous %.4f)",
+                        trigger_pos, RETRACT_DISTANCE, last_sample
+                    )
+                    continue  # Don't count this as a touch attempt
+            
+            touch_count += 1
             collected.append(trigger_pos)
-            logger.debug("Touch %d: %.4f", i + 1, trigger_pos)
+            logger.debug("Touch %d: %.4f", touch_count, trigger_pos)
 
             if len(collected) < required_samples:
                 continue
@@ -225,8 +258,13 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         )
         raise TouchError(msg)
 
-    def _perform_single_probe(self) -> float:
+    def _perform_single_probe(self, threshold_override: int | None = None, speed_override: float | None = None) -> float:
         model = self.get_model()
+        # Store threshold override for use in home_start
+        self._threshold_override = threshold_override
+        # Use speed override if provided, otherwise model speed
+        probe_speed = speed_override if speed_override is not None else model.speed
+        
         if self._toolhead.get_position().z < RETRACT_DISTANCE:
             self._toolhead.move(z=RETRACT_DISTANCE, speed=5)
         self._toolhead.wait_moves()
@@ -234,9 +272,10 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         max_accel = self._toolhead.get_max_accel()
         self._toolhead.set_max_accel(TOUCH_ACCEL)
         try:
-            trigger_pos = self._toolhead.z_probing_move(self, speed=model.speed)
+            trigger_pos = self._toolhead.z_probing_move(self, speed=probe_speed)
         finally:
             self._toolhead.set_max_accel(max_accel)
+            self._threshold_override = None  # Clear after probe
 
         pos = self._toolhead.get_position()
         self._toolhead.move(
@@ -248,8 +287,10 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
     @override
     def home_start(self, print_time: float) -> object:
         model = self.get_model()
-        if model.threshold <= 0:
-            msg = "Threshold must positive"
+        # Use threshold override if set, otherwise use model threshold
+        threshold = getattr(self, '_threshold_override', None) or model.threshold
+        if threshold <= 0:
+            msg = "Threshold must be positive"
             raise RuntimeError(msg)
 
         pos = self._toolhead.get_position()
@@ -266,7 +307,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         if nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
             msg = f"Nozzle temperature must be below {max_temp:d}C"
             raise RuntimeError(msg)
-        return self._mcu.start_homing_touch(print_time, model.threshold)
+        return self._mcu.start_homing_touch(print_time, threshold)
 
     @override
     def on_home_end(self, homing_state: HomingState) -> None:
@@ -304,7 +345,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             cluster2 = sorted_samples[max_gap_idx+1:]
             
             # Only warn if BOTH clusters:
-            # 1. Have multiple samples 
+            # 1. Have multiple samples
             # 2. Are internally cohesive
             if len(cluster1) >= 2 and len(cluster2) >= 2:
                 cluster1_range = max(cluster1) - min(cluster1)
