@@ -89,7 +89,7 @@ def test_probe_suceeds_on_more(mocker: MockerFixture, toolhead: Toolhead, probe:
 def test_probe_spread_samples_rejected_by_window(mocker: MockerFixture, toolhead: Toolhead, probe: Probe) -> None:
     # Spread-out good samples interleaved with bad ones can no longer be cherry-picked
     # because the sliding window only considers the most recent samples + max_noisy_samples.
-    toolhead.z_probing_move = mocker.Mock(side_effect=[0.5, 1.0, 1.5, 0.5, 2.5, 0.5, 3.5, 0.5, 4.5, 0.5])
+    toolhead.z_probing_move = mocker.Mock(side_effect=[0.5, 1.0, 1.5, 0.5, 2.5, 0.5, 3.5, 0.5, 4.5, 0.5, 5.5])
     toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 1))
 
     with pytest.raises(RuntimeError, match="Unable to find"):
@@ -110,6 +110,53 @@ def test_probe_unhomed_z(mocker: MockerFixture, toolhead: Toolhead, probe: Probe
 
     with pytest.raises(RuntimeError, match="Z axis must be homed"):
         _ = probe.touch.perform_probe()
+
+
+def test_probe_threshold_override_reaches_home_start(
+    mocker: MockerFixture, mcu: Mcu, toolhead: Toolhead, probe: Probe
+) -> None:
+    def z_probe(endstop, *, speed: float) -> float:
+        del speed
+        _ = endstop.home_start(1.0)
+        return 0.5
+
+    toolhead.z_probing_move = mocker.Mock(side_effect=z_probe)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 5))
+
+    _ = probe.touch.perform_probe(threshold_override=2500)
+
+    assert all(call.args == (1.0, 2500) for call in mcu.start_homing_touch.call_args_list)
+
+
+def test_probe_speed_override_reaches_z_probing_move(
+    mocker: MockerFixture, toolhead: Toolhead, probe: Probe
+) -> None:
+    toolhead.z_probing_move = mocker.Mock(return_value=0.5)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 5))
+
+    _ = probe.touch.perform_probe(speed_override=7.5)
+
+    assert all(call.kwargs["speed"] == 7.5 for call in toolhead.z_probing_move.call_args_list)
+
+
+def test_probe_override_state_cleared_after_failed_probe(
+    mocker: MockerFixture, mcu: Mcu, toolhead: Toolhead, probe: Probe
+) -> None:
+    def z_probe(endstop, *, speed: float) -> float:
+        del speed
+        _ = endstop.home_start(1.0)
+        msg = "probe failed"
+        raise RuntimeError(msg)
+
+    toolhead.z_probing_move = mocker.Mock(side_effect=z_probe)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 5))
+
+    with pytest.raises(RuntimeError, match="probe failed"):
+        _ = probe.touch.perform_probe(threshold_override=2500)
+
+    _ = probe.touch.home_start(2.0)
+
+    assert mcu.start_homing_touch.call_args_list[-1].args == (2.0, 1000)
 
 
 def test_home_wait(mocker: MockerFixture, mcu: Mcu, probe: Probe) -> None:
