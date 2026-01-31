@@ -24,4 +24,4 @@ jobs:
             -H "Authorization: token ${{ secrets.GIST_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/gists/${{ secrets.GIST_ID }} \
-            -d "{\"files\":{\"moonraker-last-update.json\":{\"content\":\"{\\\"date\\\":\\\"$COMMIT_DATE\\\"}\"}}}"
+            -d "{\"files\":{\"cartographer-last-update.json\":{\"content\":\"{\\\"date\\\":\\\"$COMMIT_DATE\\\"}\"}}}"
