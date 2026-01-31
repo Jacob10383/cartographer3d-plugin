@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 TOUCH_ACCEL = 100
 MAX_SAMPLE_RANGE = 0.010  # All samples must be within 10 microns
-RETRACT_DISTANCE = 2.0
 MAX_TOUCH_TEMPERATURE_EPSILON = 2
 
 
@@ -46,7 +45,9 @@ class TouchModeConfiguration:
     mesh_min: tuple[float, float]
     mesh_max: tuple[float, float]
     max_touch_temperature: int
+    lift_speed: float
 
+    retract_distance: float
     models: dict[str, TouchModelConfiguration]
 
     @staticmethod
@@ -60,6 +61,8 @@ class TouchModeConfiguration:
             mesh_min=config.bed_mesh.mesh_min,
             mesh_max=config.bed_mesh.mesh_max,
             max_touch_temperature=config.touch.max_touch_temperature,
+            lift_speed=config.general.lift_speed,
+            retract_distance=config.touch.retract_distance,
         )
 
 
@@ -167,8 +170,8 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             msg = "Z axis must be homed before probing"
             raise RuntimeError(msg)
 
-        if self._toolhead.get_position().z < 5:
-            self._toolhead.move(z=5, speed=5)
+        if self._toolhead.get_position().z < self._config.retract_distance:
+            self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
         self._toolhead.wait_moves()
 
         self.last_z_result = self._run_probe(threshold_override, speed_override)
@@ -215,14 +218,14 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             trigger_pos = self._perform_single_probe(threshold_override, speed_override)
             
             # Filter out false triggers on retract move
-            # If this sample is exactly RETRACT_DISTANCE from the previous, it's a phantom trigger
+            # If this sample is exactly retract_distance from the previous, it's a phantom trigger
             if collected:
                 last_sample = collected[-1]
                 delta = abs(trigger_pos - last_sample)
-                if abs(delta - RETRACT_DISTANCE) < 0.01:  # Within 0.01mm of exact retract distance
+                if abs(delta - self._config.retract_distance) < 0.01:  # Within 0.01mm of exact retract distance
                     logger.warning(
                         "!! Phantom trigger ignored: %.4f (exactly +%.1fmm from previous %.4f)",
-                        trigger_pos, RETRACT_DISTANCE, last_sample
+                        trigger_pos, self._config.retract_distance, last_sample
                     )
                     continue  # Don't count this as a touch attempt
             
@@ -265,8 +268,8 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         # Use speed override if provided, otherwise model speed
         probe_speed = speed_override if speed_override is not None else model.speed
         
-        if self._toolhead.get_position().z < RETRACT_DISTANCE:
-            self._toolhead.move(z=RETRACT_DISTANCE, speed=5)
+        if self._toolhead.get_position().z < self._config.retract_distance:
+            self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
         self._toolhead.wait_moves()
 
         max_accel = self._toolhead.get_max_accel()
@@ -279,8 +282,8 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
 
         pos = self._toolhead.get_position()
         self._toolhead.move(
-            z=max(pos.z + RETRACT_DISTANCE, RETRACT_DISTANCE),
-            speed=5,
+            z=max(pos.z + self._config.retract_distance, self._config.retract_distance),
+            speed=self._config.lift_speed,
         )
         return trigger_pos - model.z_offset
 
