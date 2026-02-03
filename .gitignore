@@ -8,6 +8,5 @@ __pycache__/
 .pdm-python
 dist/
 .tox/
-.coverage*
 junit*.xml
 release_info
