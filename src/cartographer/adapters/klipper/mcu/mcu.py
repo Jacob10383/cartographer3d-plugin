@@ -322,25 +322,25 @@ class KlipperCartographerMcu(Mcu, KlipperStreamMcu):
         Called when the Cartographer MCU reconnects. Re-initializes the
         state and applies threshold if a model is loaded.
         """
-        
         mcu_name = self.klipper_mcu.get_name() if hasattr(self.klipper_mcu, 'get_name') else 'unknown'
-        is_disconnected = getattr(self.klipper_mcu, 'non_critical_disconnected', 'N/A')
-        
-        # Force re-initialize MCU-dependent state (bypass disconnect guard)
-        # The MCU just reconnected so we MUST rebuild commands with new command queue
-        self._constants = KlipperCartographerConstants(self.klipper_mcu)
-        # Manually call _initialize_constants since config callbacks don't fire post-config
-        self._constants._initialize_constants()
-        
-        
-        self._commands = KlipperCartographerCommands(self.klipper_mcu)
-        self.klipper_mcu.register_response(self._handle_data, "cartographer_data")
-        
-        # Re-initialize the dispatch's trsync FFI objects
-        self.dispatch.reinit_after_reconnect()
-        
-        # Reset sensor ready flag so it will be checked again
-        self._sensor_ready = False
+        try:
+            # Force re-initialize MCU-dependent state (bypass disconnect guard)
+            # The MCU just reconnected so we MUST rebuild commands with new command queue.
+            self._constants = KlipperCartographerConstants(self.klipper_mcu)
+            # Config callbacks don't fire post-config, so initialize constants directly.
+            self._constants._initialize_constants()
+            self._commands = KlipperCartographerCommands(self.klipper_mcu)
+            self.klipper_mcu.register_response(self._handle_data, "cartographer_data")
+            # Re-initialize trigger dispatch FFI objects tied to MCU serialqueue.
+            self.dispatch.reinit_after_reconnect()
+            # Reset sensor ready flag so it will be checked again.
+            self._sensor_ready = False
+        except Exception:
+            # Never raise from reconnect event handlers; raising can poison MCU reconnect state.
+            self._constants = None
+            self._commands = None
+            self._sensor_ready = False
+            logger.exception("Failed to finalize Cartographer MCU reconnect for '%s'", mcu_name)
         
 
     def _handle_mcu_identify(self) -> None:
