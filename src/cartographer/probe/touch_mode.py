@@ -276,6 +276,13 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
 
         max_accel = self._toolhead.get_max_accel()
         self._toolhead.set_max_accel(TOUCH_ACCEL)
+
+        # Wait for a single new sample
+        # This seems to help avoid triggering prior to move
+        time = self._toolhead.get_last_move_time()
+        with self._mcu.start_session(lambda sample: sample.time >= time):
+            pass
+
         try:
             trigger_pos = self._toolhead.z_probing_move(self, speed=probe_speed)
         finally:
@@ -310,7 +317,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         nozzle_temperature = max(self._toolhead.get_extruder_temperature())
         max_temp = self._config.max_touch_temperature
         if nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
-            msg = f"Nozzle temperature must be below {max_temp:d}C"
+            msg = f"Nozzle temperature must be below {max_temp:d}C, was {nozzle_temperature:d}C"
             raise RuntimeError(msg)
         return self._mcu.start_homing_touch(print_time, threshold)
 
