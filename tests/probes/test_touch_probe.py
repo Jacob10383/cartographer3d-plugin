@@ -6,6 +6,7 @@ import pytest
 
 from cartographer.interfaces.configuration import Configuration, TouchModelConfiguration
 from cartographer.interfaces.printer import Mcu, Position, TemperatureStatus, Toolhead
+from cartographer.probe.touch_mode import TouchMode, TouchModeConfiguration
 
 if TYPE_CHECKING:
     from pytest_mock import MockerFixture
@@ -49,6 +50,70 @@ def test_probe_includes_z_offset(
     toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 1))
 
     assert probe.touch.perform_probe() == 0
+
+
+def test_scan_pre_approach_runs_fast_move_when_not_triggered(
+    mocker: MockerFixture,
+    mcu: Mcu,
+    toolhead: Toolhead,
+    config: Configuration,
+) -> None:
+    """When scan says not triggered, perform_probe should do a fast z_probing_move via scan before touch."""
+    from cartographer.probe.scan_mode import ScanMode
+
+    scan = mocker.Mock(spec=ScanMode, autospec=True)
+    scan.is_ready = True
+    scan.query_is_triggered = mocker.Mock(return_value=False)
+    scan.probe_speed = 5.0
+
+    touch = TouchMode(
+        mcu,
+        toolhead,
+        TouchModeConfiguration.from_config(config),
+        scan_mode=scan,
+    )
+    touch.load_model("test_touch")
+
+    # fast scan approach triggers at 2.0, then touch probes return 0.5
+    toolhead.z_probing_move = mocker.Mock(side_effect=[2.0, 0.5, 0.5, 0.5, 0.5, 0.5])
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 5))
+
+    _ = touch.perform_probe()
+
+    # First call should be the scan pre-approach, rest are touch probes
+    assert toolhead.z_probing_move.mock_calls[0] == mocker.call(scan, speed=5.0)
+    assert toolhead.z_probing_move.mock_calls[1] == mocker.call(touch, speed=3)
+
+
+def test_scan_pre_approach_skipped_when_already_triggered(
+    mocker: MockerFixture,
+    mcu: Mcu,
+    toolhead: Toolhead,
+    config: Configuration,
+) -> None:
+    """When scan says already triggered, no fast z_probing_move via scan should happen."""
+    from cartographer.probe.scan_mode import ScanMode
+
+    scan = mocker.Mock(spec=ScanMode, autospec=True)
+    scan.is_ready = True
+    scan.query_is_triggered = mocker.Mock(return_value=True)
+
+    touch = TouchMode(
+        mcu,
+        toolhead,
+        TouchModeConfiguration.from_config(config),
+        scan_mode=scan,
+    )
+    touch.load_model("test_touch")
+
+    toolhead.z_probing_move = mocker.Mock(return_value=0.5)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 3))
+
+    _ = touch.perform_probe()
+
+    # All probing moves should be touch probes, none via scan
+    for call in toolhead.z_probing_move.mock_calls:
+        assert call == mocker.call(touch, speed=3)
 
 
 def test_probe_moves_below_2(mocker: MockerFixture, toolhead: Toolhead, probe: Probe) -> None:

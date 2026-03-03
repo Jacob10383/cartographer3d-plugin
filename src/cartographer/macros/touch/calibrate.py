@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from cartographer.interfaces.multiprocessing import TaskExecutor
     from cartographer.interfaces.printer import Toolhead
     from cartographer.probe.probe import Probe
+    from cartographer.probe.scan_mode import ScanMode
 
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,7 @@ class TouchCalibrateMacro(Macro):
             TouchModeConfiguration.from_config(self._config),
             threshold=p.threshold_start,
             speed=p.speed,
+            scan_mode=self._probe.scan,
         )
 
         screener = ThresholdScreener(calibration_mode, required_samples)
@@ -513,12 +515,14 @@ class CalibrationTouchMode(TouchMode):
         *,
         threshold: int,
         speed: float,
+        scan_mode: ScanMode | None = None,
     ) -> None:
         model = TouchModelConfiguration(name="calibration", threshold=threshold, speed=speed, z_offset=0)
         super().__init__(
             mcu,
             toolhead,
             replace(config, models={"calibration": model}),
+            scan_mode,
         )
         self.load_model("calibration")
 
@@ -538,10 +542,12 @@ class CalibrationTouchMode(TouchMode):
         """Collect samples at the given threshold."""
         self.set_threshold(threshold)
         samples: list[float] = []
+        allow_fast_start = True
 
         for _ in range(sample_count):
-            pos = self._perform_single_probe()
+            pos = self._perform_single_probe(allow_fast_start=allow_fast_start)
             samples.append(pos)
+            allow_fast_start = False
 
         return tuple(sorted(samples))
 
@@ -552,8 +558,16 @@ class CalibrationTouchMode(TouchMode):
         Uses the shared run_probe_sequence to ensure parity with
         the runtime TouchMode._run_probe() logic.
         """
+        allow_fast_start = True
+
+        def _probe_sample() -> float:
+            nonlocal allow_fast_start
+            pos = self._perform_single_probe(allow_fast_start=allow_fast_start)
+            allow_fast_start = False
+            return pos
+
         return run_probe_sequence(
-            self._perform_single_probe,
+            _probe_sample,
             samples=self._config.samples,
             max_samples=self._config.max_samples,
             max_window=self._config.max_window,

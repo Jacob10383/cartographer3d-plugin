@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from typing_extensions import override
 
+from cartographer.interfaces.errors import ProbeTriggerError
 from cartographer.interfaces.printer import (
     Endstop,
     HomingState,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         Configuration,
         TouchModelConfiguration,
     )
+    from cartographer.probe.scan_mode import ScanMode
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,7 @@ class TouchModeConfiguration:
     mesh_max: tuple[float, float]
     max_touch_temperature: int
     lift_speed: float
+    travel_speed: float
 
     retract_distance: float
     models: dict[str, TouchModelConfiguration]
@@ -64,6 +67,7 @@ class TouchModeConfiguration:
             mesh_max=config.bed_mesh.mesh_max,
             max_touch_temperature=config.touch.max_touch_temperature,
             lift_speed=config.general.lift_speed,
+            travel_speed=config.general.travel_speed,
             retract_distance=config.touch.retract_distance,
             sample_range=config.touch.sample_range,
         )
@@ -196,6 +200,16 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
     """Implementation for Survey Touch."""
 
     @property
+    def retract_distance(self) -> float:
+        return self._config.retract_distance
+
+    def is_pre_touch_triggered(self) -> bool | None:
+        if self._scan_mode is None or not self._scan_mode.is_ready:
+            return None
+        time = self._toolhead.get_last_move_time()
+        return self._scan_mode.query_is_triggered(time)
+
+    @property
     @override
     def offset(self) -> Position:
         return Position(0.0, 0.0, 0.0)
@@ -215,12 +229,14 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         mcu: Mcu,
         toolhead: Toolhead,
         config: TouchModeConfiguration,
+        scan_mode: ScanMode | None = None,
     ) -> None:
         super().__init__(config.models)
         self._last_homing_time: float = 0.0
         self._toolhead: Toolhead = toolhead
         self._mcu: Mcu = mcu
         self._config: TouchModeConfiguration = config
+        self._scan_mode: ScanMode | None = scan_mode
 
         self.boundaries: TouchBoundaries = TouchBoundaries.from_config(config)
         self.last_z_result: float | None = None
@@ -244,14 +260,18 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         ignore_temp_limit: bool = False,
         log_sequence_start: bool = True,
         log_touch_settings: bool = True,
+        use_scan_approach: bool = True,
     ) -> float:
         if not self._toolhead.is_homed("z"):
             msg = "Z axis must be homed before probing"
             raise RuntimeError(msg)
 
-        if self._toolhead.get_position().z < self._config.retract_distance:
-            self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
-        self._toolhead.wait_moves()
+        fast_start = self._pre_touch_approach_with_scan() if use_scan_approach else False
+
+        if not fast_start:
+            if self._toolhead.get_position().z < self._config.retract_distance:
+                self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
+            self._toolhead.wait_moves()
 
         self.last_z_result = self._run_probe(
             threshold_override,
@@ -259,8 +279,28 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             ignore_temp_limit=ignore_temp_limit,
             log_sequence_start=log_sequence_start,
             log_touch_settings=log_touch_settings,
+            fast_start=fast_start,
         )
         return self.last_z_result
+
+    def _pre_touch_approach_with_scan(self) -> bool:
+        """Use scan trigger for a coarse Z approach before touch probing."""
+        if self._scan_mode is None or not self._scan_mode.is_ready:
+            return False
+
+        print_time = self._toolhead.get_last_move_time()
+        try:
+            if self._scan_mode.query_is_triggered(print_time):
+                return True
+            self._toolhead.z_probing_move(
+                self._scan_mode,
+                speed=self._scan_mode.probe_speed,
+            )
+            self._toolhead.wait_moves()
+            return True
+        except RuntimeError as err:
+            logger.debug("Scan pre-approach skipped: %s", err)
+            return False
 
     def _run_probe(
         self,
@@ -270,6 +310,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         ignore_temp_limit: bool = False,
         log_sequence_start: bool = True,
         log_touch_settings: bool = True,
+        fast_start: bool = False,
     ) -> float:
         if log_sequence_start:
             logger.info(
@@ -300,6 +341,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
                 trigger_pos = self._perform_single_probe(
                     threshold_override,
                     speed_override,
+                    allow_fast_start=(fast_start and not collected),
                     ignore_temp_limit=ignore_temp_limit,
                 )
 
@@ -334,6 +376,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         threshold_override: int | None = None,
         speed_override: float | None = None,
         *,
+        allow_fast_start: bool = False,
         ignore_temp_limit: bool = False,
     ) -> float:
         model = self.get_model()
@@ -341,9 +384,11 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         self._ignore_temp_limit = ignore_temp_limit
         probe_speed = speed_override if speed_override is not None else model.speed
 
-        if self._toolhead.get_position().z < self._config.retract_distance:
+        if not allow_fast_start and self._toolhead.get_position().z < self._config.retract_distance:
             self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
-        self._toolhead.wait_moves()
+            self._toolhead.wait_moves()
+        elif not allow_fast_start:
+            self._toolhead.wait_moves()
 
         max_accel = self._toolhead.get_max_accel()
         self._toolhead.set_max_accel(TOUCH_ACCEL)
@@ -355,7 +400,15 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             pass
 
         try:
-            trigger_pos = self._toolhead.z_probing_move(self, speed=probe_speed)
+            try:
+                trigger_pos = self._toolhead.z_probing_move(self, speed=probe_speed)
+            except ProbeTriggerError:
+                if not allow_fast_start:
+                    raise
+                logger.debug("Fast-start touch probe triggered before movement; retrying with safety retract.")
+                self._toolhead.move(z=self._config.retract_distance, speed=self._config.lift_speed)
+                self._toolhead.wait_moves()
+                trigger_pos = self._toolhead.z_probing_move(self, speed=probe_speed)
         finally:
             self._toolhead.set_max_accel(max_accel)
             self._threshold_override = None

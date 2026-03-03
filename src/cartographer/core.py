@@ -74,7 +74,12 @@ class PrinterCartographer:
 
         # Initialize probe modes
         self.scan_mode = self._create_scan_mode(toolhead, adapters)
-        self.touch_mode = TouchMode(self.mcu, toolhead, TouchModeConfiguration.from_config(self.config))
+        self.touch_mode = TouchMode(
+            self.mcu,
+            toolhead,
+            TouchModeConfiguration.from_config(self.config),
+            scan_mode=self.scan_mode,
+        )
 
         # Create probe
         probe = Probe(self.scan_mode, self.touch_mode)

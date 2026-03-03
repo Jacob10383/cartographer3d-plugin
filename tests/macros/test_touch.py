@@ -29,6 +29,8 @@ def probe(mocker: MockerFixture, offset: Position) -> Probe:
     mock = mocker.Mock(spec=Probe, autospec=True)
     mock.config = mocker.Mock(spec=TouchModeConfiguration, autospec=True)
     mock.config.move_speed = 42
+    mock.retract_distance = 2.0
+    mock.is_pre_touch_triggered = mocker.Mock(return_value=True)
     mock.offset = offset
     return mock
 
@@ -130,6 +132,44 @@ def test_touch_home_macro_moves(
 
     assert move_spy.mock_calls == [
         mocker.call(z=4, speed=mocker.ANY),
+        mocker.call(x=10, y=10, speed=mocker.ANY),
+    ]
+
+
+def test_touch_home_macro_zhops_when_triggered_even_at_high_z(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+    params: MacroParams,
+):
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=0.1)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 50))
+    move_spy = mocker.spy(toolhead, "move")
+
+    macro.run(params)
+
+    assert move_spy.mock_calls == [
+        mocker.call(z=52, speed=mocker.ANY),
+        mocker.call(x=10, y=10, speed=mocker.ANY),
+    ]
+
+
+def test_touch_home_macro_skips_zhop_when_scan_not_triggered(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+    params: MacroParams,
+):
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=0.1)
+    probe.is_pre_touch_triggered = mocker.Mock(return_value=False)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 2))
+    move_spy = mocker.spy(toolhead, "move")
+
+    macro.run(params)
+
+    assert move_spy.mock_calls == [
         mocker.call(x=10, y=10, speed=mocker.ANY),
     ]
 
