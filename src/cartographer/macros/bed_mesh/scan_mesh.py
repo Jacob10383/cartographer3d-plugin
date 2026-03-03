@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass, replace
 from itertools import chain
 from math import isfinite
@@ -85,6 +86,16 @@ PATH_GENERATOR_MAP = {
     MeshPath.SPIRAL: SpiralPathGenerator,
     MeshPath.RANDOM: RandomPathGenerator,
 }
+
+BED_MESH_PREPARE_COMMANDS: tuple[tuple[str, ...], ...] = (
+    ("/etc/init.d/guppyscreen", "stop"),
+    ("/etc/init.d/ustreamer", "stop"),
+    ("/etc/init.d/ustreamer", "start", "fps=5", "max_clients=1"),
+)
+BED_MESH_RESTORE_COMMANDS: tuple[tuple[str, ...], ...] = (
+    ("/etc/init.d/ustreamer", "restart"),
+    ("/etc/init.d/guppyscreen", "restart"),
+)
 
 
 @dataclass(frozen=True)
@@ -208,27 +219,54 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
                 raise RuntimeError(msg)
             return self._fallback.run(params)
 
-        # Parse parameters and validate
-        scan_params = MeshScanParams.from_macro_params(params, self.config, self.adapter)
+        self._prepare_services_for_mesh()
+        try:
+            scan_params = MeshScanParams.from_macro_params(params, self.config, self.adapter)
 
-        # Create mesh grid and processors
-        grid = MeshGrid(
-            scan_params.mesh_bounds.min_point,
-            scan_params.mesh_bounds.max_point,
-            scan_params.resolution[0],
-            scan_params.resolution[1],
-        )
-        # Generate path and collect samples
-        path = self._generate_path(grid, scan_params)
-        self.adapter.clear_mesh()
-        samples = self._collect_samples(path, scan_params)
+            # Create mesh grid and processors
+            grid = MeshGrid(
+                scan_params.mesh_bounds.min_point,
+                scan_params.mesh_bounds.max_point,
+                scan_params.resolution[0],
+                scan_params.resolution[1],
+            )
+            # Generate path and collect samples
+            path = self._generate_path(grid, scan_params)
+            self.adapter.clear_mesh()
+            samples = self._collect_samples(path, scan_params)
 
-        # Process samples and create mesh
-        positions = self.task_executor.run(self._process_samples_to_positions, grid, samples, scan_params.height)
-        positions = self._apply_zero_reference_height(positions, scan_params, grid)
+            # Process samples and create mesh
+            positions = self.task_executor.run(self._process_samples_to_positions, grid, samples, scan_params.height)
+            positions = self._apply_zero_reference_height(positions, scan_params, grid)
 
-        # Apply mesh to adapter
-        self.adapter.apply_mesh(positions, scan_params.profile)
+            # Apply mesh to adapter
+            self.adapter.apply_mesh(positions, scan_params.profile)
+        finally:
+            self._restore_services_after_mesh()
+
+    def _prepare_services_for_mesh(self) -> None:
+        logger.info("Killing guppy and lowering ustreamer fps")
+        for command in BED_MESH_PREPARE_COMMANDS:
+            self._run_service_command(command)
+
+    def _restore_services_after_mesh(self) -> None:
+        logger.info("Restoring guppy and ustreamer")
+        for command in BED_MESH_RESTORE_COMMANDS:
+            self._run_service_command(command)
+
+    def _run_service_command(self, command: tuple[str, ...]) -> None:
+        command_text = " ".join(command)
+        try:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            logger.debug("Skipping bed mesh service command (not found): %s", command_text)
+        except OSError as e:
+            logger.warning("Failed to launch bed mesh service command (%s): %s", command_text, e)
 
     def _apply_zero_reference_height(
         self, positions: list[Position], params: MeshScanParams, grid: MeshGrid
