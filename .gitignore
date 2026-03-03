@@ -10,3 +10,8 @@ dist/
 .tox/
 junit*.xml
 release_info
+touch_expansion_artifacts/
+carto_dumps/
+touch_expansion_*.csv
+touch_expansion_*.png
+touch_expansion_*.txt

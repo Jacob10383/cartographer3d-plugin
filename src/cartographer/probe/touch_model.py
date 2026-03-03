@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import final
 
 from typing_extensions import override
@@ -26,6 +28,10 @@ class TouchModel:
     @property
     def threshold(self) -> int:
         return self.config.threshold
+
+    @property
+    def thermal_expansion_coefficient(self) -> float | None:
+        return self.config.thermal_expansion_coefficient
 
 
 class TouchModelSelectorMixin(ModelSelectorMixin[TouchModel, TouchModelConfiguration]):

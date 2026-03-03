@@ -37,6 +37,7 @@ from cartographer.macros.touch import (
     DEFAULT_TOUCH_MODEL_NAME,
     TouchAccuracyMacro,
     TouchCalibrateMacro,
+    TouchFitExpansionMacro,
     TouchHomeMacro,
     TouchProbeMacro,
 )
@@ -196,7 +197,7 @@ class PrinterCartographer:
         registrations.extend(self._create_scan_macro_registrations(probe, toolhead))
 
         # Touch-related macros
-        registrations.extend(self._create_touch_macro_registrations(probe, toolhead))
+        registrations.extend(self._create_touch_macro_registrations(probe, toolhead, adapters))
 
         # Axis twist compensation
         registrations.extend(self._create_axis_twist_compensation_registration(probe, toolhead, adapters))
@@ -295,7 +296,12 @@ class PrinterCartographer:
             )
         )
 
-    def _create_touch_macro_registrations(self, probe: Probe, toolhead: Toolhead) -> list[MacroRegistration]:
+    def _create_touch_macro_registrations(
+        self,
+        probe: Probe,
+        toolhead: Toolhead,
+        adapters: Adapters,
+    ) -> list[MacroRegistration]:
         """Create touch-related macro registrations."""
         return list(
             chain.from_iterable(
@@ -318,6 +324,15 @@ class PrinterCartographer:
                             self.touch_mode,
                             toolhead,
                             lift_speed=self.config.general.lift_speed,
+                        ),
+                    ),
+                    self._register_macro(
+                        "TOUCH_FIT_EXPANSION",
+                        TouchFitExpansionMacro(
+                            self.touch_mode,
+                            toolhead,
+                            self.config,
+                            adapters.gcode,
                         ),
                     ),
                     self._register_macro(

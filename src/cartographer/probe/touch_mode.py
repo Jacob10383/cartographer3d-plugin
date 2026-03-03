@@ -225,6 +225,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         self.boundaries: TouchBoundaries = TouchBoundaries.from_config(config)
         self.last_z_result: float | None = None
         self._threshold_override: int | None = None
+        self._ignore_temp_limit: bool = False
 
     @override
     def get_status(self, eventtime: float) -> dict[str, object]:
@@ -240,6 +241,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         threshold_override: int | None = None,
         speed_override: float | None = None,
         *,
+        ignore_temp_limit: bool = False,
         log_sequence_start: bool = True,
         log_touch_settings: bool = True,
     ) -> float:
@@ -254,6 +256,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         self.last_z_result = self._run_probe(
             threshold_override,
             speed_override,
+            ignore_temp_limit=ignore_temp_limit,
             log_sequence_start=log_sequence_start,
             log_touch_settings=log_touch_settings,
         )
@@ -264,6 +267,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         threshold_override: int | None = None,
         speed_override: float | None = None,
         *,
+        ignore_temp_limit: bool = False,
         log_sequence_start: bool = True,
         log_touch_settings: bool = True,
     ) -> float:
@@ -293,7 +297,11 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         def _probe_sample() -> float:
             # Retry within a single touch slot when we detect a phantom trigger.
             while True:
-                trigger_pos = self._perform_single_probe(threshold_override, speed_override)
+                trigger_pos = self._perform_single_probe(
+                    threshold_override,
+                    speed_override,
+                    ignore_temp_limit=ignore_temp_limit,
+                )
 
                 # If a trigger lands exactly one retract distance from the previous sample,
                 # it is likely from the retract move and should be ignored.
@@ -321,9 +329,16 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             log_start=False,
         )
         return median
-    def _perform_single_probe(self, threshold_override: int | None = None, speed_override: float | None = None) -> float:
+    def _perform_single_probe(
+        self,
+        threshold_override: int | None = None,
+        speed_override: float | None = None,
+        *,
+        ignore_temp_limit: bool = False,
+    ) -> float:
         model = self.get_model()
         self._threshold_override = threshold_override
+        self._ignore_temp_limit = ignore_temp_limit
         probe_speed = speed_override if speed_override is not None else model.speed
 
         if self._toolhead.get_position().z < self._config.retract_distance:
@@ -344,12 +359,14 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
         finally:
             self._toolhead.set_max_accel(max_accel)
             self._threshold_override = None
+            self._ignore_temp_limit = False
 
         pos = self._toolhead.get_position()
         self._toolhead.move(
             z=max(pos.z + self._config.retract_distance, self._config.retract_distance),
             speed=self._config.lift_speed,
         )
+
         return trigger_pos - model.z_offset
 
     @override
@@ -372,9 +389,10 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
 
         nozzle_temperature = max(self._toolhead.get_extruder_temperature())
         max_temp = self._config.max_touch_temperature
-        if nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
-            msg = f"Nozzle temperature must be below {max_temp:d}C, was {nozzle_temperature:.1f}C"
-            raise RuntimeError(msg)
+        if not self._ignore_temp_limit:
+            if nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
+                msg = f"Nozzle temperature must be below {max_temp:d}C, was {nozzle_temperature:.1f}C"
+                raise RuntimeError(msg)
         return self._mcu.start_homing_touch(print_time, threshold)
 
     @override

@@ -32,6 +32,7 @@ from cartographer.macros.stream import StreamMacro, StreamParams
 from cartographer.macros.temperature_calibrate import TemperatureCalibrateMacro, TemperatureCalibrateParams
 from cartographer.macros.touch.accuracy import TouchAccuracyMacro, TouchAccuracyParams
 from cartographer.macros.touch.calibrate import TouchCalibrateMacro, TouchCalibrateParams
+from cartographer.macros.touch.fit_expansion import TouchFitExpansionMacro, TouchFitExpansionParams
 from cartographer.macros.touch.home import TouchHomeMacro, TouchHomeParams
 from cartographer.macros.touch.probe import TouchProbeMacro, TouchProbeMacroParams
 
@@ -59,6 +60,7 @@ MACROS: list[tuple[str, type[Macro], type]] = [
     ("CARTOGRAPHER_TOUCH_MODEL", TouchModelManager, ModelManagerParams),
     ("CARTOGRAPHER_TOUCH_PROBE", TouchProbeMacro, TouchProbeMacroParams),
     ("CARTOGRAPHER_TOUCH_ACCURACY", TouchAccuracyMacro, TouchAccuracyParams),
+    ("CARTOGRAPHER_TOUCH_FIT_EXPANSION", TouchFitExpansionMacro, TouchFitExpansionParams),
     ("CARTOGRAPHER_TOUCH_HOME", TouchHomeMacro, TouchHomeParams),
     ("CARTOGRAPHER_AXIS_TWIST_COMPENSATION", AxisTwistCompensationMacro, AxisTwistParams),
 ]
