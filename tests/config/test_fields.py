@@ -8,7 +8,7 @@ from typing import final
 import pytest
 
 from cartographer.config.fields import get_option_name, option, parse
-from cartographer.interfaces.configuration import MeshDirection, MeshPath
+from cartographer.interfaces.configuration import MeshDirection, MeshPath, TouchConfig
 
 # ---------------------------------------------------------------------------
 # Mock ConfigWrapper — mirrors Klipper's configfile.ConfigWrapper behaviour
@@ -218,6 +218,18 @@ class TestParseOptional:
         result = parse(OptionalConfig, config)  # pyright: ignore[reportArgumentType]
         assert result.label == "hello"
         assert result.weight == 1.5
+
+
+class TestParseTouchConfig:
+    def test_consumes_optional_thermal_expansion_coefficient(self) -> None:
+        config = MockConfigWrapper({"thermal_expansion_coefficient": "0.0004"}, section="cartographer touch")
+        result = parse(TouchConfig, config, models={})  # pyright: ignore[reportArgumentType]
+        assert result.thermal_expansion_coefficient == 0.0004
+
+    def test_defaults_thermal_expansion_coefficient_to_none(self) -> None:
+        config = MockConfigWrapper({}, section="cartographer touch")
+        result = parse(TouchConfig, config, models={})  # pyright: ignore[reportArgumentType]
+        assert result.thermal_expansion_coefficient is None
 
 
 # ---------------------------------------------------------------------------

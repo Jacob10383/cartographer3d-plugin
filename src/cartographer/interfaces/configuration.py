@@ -203,6 +203,10 @@ class TouchConfig:
     )
     retract_distance: float = option("Retract distance (in mm) between touch samples.", default=2.0, min=1.0)
     sample_range: float = option("Acceptable range (in mm) between touch samples.", default=0.010, min=0.001, max=0.015)
+    thermal_expansion_coefficient: float | None = option(
+        "Optional touch thermal expansion slope in mm/°C used by touch-home delta correction.",
+        default=None,
+    )
     models: dict[str, TouchModelConfiguration] = field(default_factory=dict)  # provided via override
 
 

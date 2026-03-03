@@ -160,7 +160,7 @@ class PrinterCartographer:
         registrations.extend(self._create_scan_macro_registrations(probe, toolhead))
 
         # Touch-related macros
-        registrations.extend(self._create_touch_macro_registrations(probe, toolhead))
+        registrations.extend(self._create_touch_macro_registrations(probe, toolhead, adapters))
 
         # Axis twist compensation
         registrations.extend(self._create_axis_twist_compensation_registration(probe, toolhead, adapters))
@@ -259,7 +259,12 @@ class PrinterCartographer:
             )
         )
 
-    def _create_touch_macro_registrations(self, probe: Probe, toolhead: Toolhead) -> list[MacroRegistration]:
+    def _create_touch_macro_registrations(
+        self,
+        probe: Probe,
+        toolhead: Toolhead,
+        adapters: Adapters,
+    ) -> list[MacroRegistration]:
         """Create touch-related macro registrations."""
         return list(
             chain.from_iterable(
@@ -293,6 +298,7 @@ class PrinterCartographer:
                             home_position=self.config.bed_mesh.zero_reference_position,
                             travel_speed=self.config.general.travel_speed,
                             random_radius=self.config.touch.home_random_radius,
+                            thermal_expansion_coefficient=self.config.touch.thermal_expansion_coefficient,
                         ),
                     ),
                 ]

@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from typing_extensions import final
 
+from cartographer.interfaces.configuration import TouchModelConfiguration
 from cartographer.interfaces.errors import ProbeTriggerError
 from cartographer.macros.touch.calibrate import (
+    DEFAULT_Z_OFFSET,
     ScreeningResult,
     ThresholdScreener,
     ThresholdVerifier,
+    TouchCalibrateMacro,
     VerificationResult,
     calculate_step,
     format_distance,
 )
 from cartographer.probe.touch_mode import TouchError
+from tests.mocks.config import MockConfiguration
+from tests.mocks.task_executor import InlineTaskExecutor
 
 # --- Fake probe for testing ---
 
@@ -317,3 +324,27 @@ class TestCalculateStep:
         """Range just above 10x uses large step."""
         step = calculate_step(threshold=1000, range_value=0.101, sample_range=0.010)
         assert step == 200  # 0.101 > 10 * 0.010, uses 20%
+
+
+def test_touch_calibrate_leaves_touch_settings_thermal_expansion_coefficient(mocker):
+    coeff = 0.0004
+    config = MockConfiguration()
+    config.touch = replace(config.touch, thermal_expansion_coefficient=coeff)
+    config.touch.models["default"] = TouchModelConfiguration(
+        name="default",
+        threshold=900,
+        speed=2.0,
+        z_offset=DEFAULT_Z_OFFSET,
+    )
+    probe = mocker.Mock()
+    probe.touch.load_model = mocker.Mock()
+    macro = TouchCalibrateMacro(probe, mocker.Mock(), mocker.Mock(), config, InlineTaskExecutor())
+
+    macro._save_calibration_result("default", threshold=1200, speed=3.5)
+
+    saved = config.touch.models["default"]
+    assert saved.threshold == 1200
+    assert saved.speed == 3.5
+    assert saved.z_offset == DEFAULT_Z_OFFSET
+    assert config.touch.thermal_expansion_coefficient == coeff
+    probe.touch.load_model.assert_called_once_with("default")
