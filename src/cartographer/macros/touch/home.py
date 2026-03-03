@@ -80,10 +80,12 @@ class TouchHomeMacro(Macro):
 
         with force_home_z(self._toolhead):
             pos = self._toolhead.get_position()
-            self._toolhead.move(
-                z=pos.z + Z_HOP,
-                speed=self._lift_speed,
-            )
+            pre_touch_triggered = self._probe.is_pre_touch_triggered()
+            if pre_touch_triggered is not False:
+                self._toolhead.move(
+                    z=pos.z + Z_HOP,
+                    speed=self._lift_speed,
+                )
             home_x, home_y = self._get_homing_position(p.random_radius)
             self._toolhead.move(
                 x=home_x,
@@ -99,7 +101,7 @@ class TouchHomeMacro(Macro):
                 model,
             )
 
-            probe_trigger = self._probe.perform_probe()
+            probe_trigger = self._probe.perform_probe(use_scan_approach=(pre_touch_triggered is False))
             raw_trigger = probe_trigger + z_offset
             effective_z_offset = z_offset - (thermal_offset_term if thermal_offset_term is not None else 0.0)
             trigger_pos = raw_trigger - effective_z_offset

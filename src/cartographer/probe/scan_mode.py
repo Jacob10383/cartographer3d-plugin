@@ -61,6 +61,10 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
     """Implementation for Scan mode."""
 
     @property
+    def probe_speed(self) -> float:
+        return self._config.probe_speed
+
+    @property
     @override
     def offset(self) -> Position:
         return Position(self._config.x_offset, self._config.y_offset, self.probe_height)
@@ -169,12 +173,11 @@ class ScanMode(ScanModelSelectorMixin, ProbeMode, Endstop):
 
     @override
     def query_is_triggered(self, print_time: float) -> bool:
-        # If MCU is disconnected, report as not triggered (safe state)
         if self._check_mcu_disconnected():
             return False
         if not self.has_model():
-            return True  # No model loaded, assume triggered
-        distance = self.measure_distance(time=print_time)
+            return True
+        distance = self.measure_distance(time=print_time, min_sample_count=3, skip_count=0)
         return distance <= self.get_endstop_position()
 
     @override
