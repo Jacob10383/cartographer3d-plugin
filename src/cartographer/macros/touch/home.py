@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from numbers import Real
 from random import random
 from typing import TYPE_CHECKING, final
 
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Z_HOP = 2
+DISPLAY_DECIMALS = 4
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,13 @@ class TouchHomeParams:
         default=config_ref(TouchConfig, "home_random_radius"),
         min=0,
         key="EXPERIMENTAL_RANDOM_RADIUS",
+    )
+    print_temp: float | None = param(
+        "Optional print nozzle temperature (°C) used to compute touch-home thermal correction.",
+        default=None,
+        key="PRINT_TEMP",
+        min=0,
+        max=400,
     )
 
 
@@ -48,6 +57,7 @@ class TouchHomeMacro(Macro):
         lift_speed: float,
         travel_speed: float,
         random_radius: float,
+        thermal_expansion_coefficient: float | None = None,
     ) -> None:
         self._probe = probe
         self._toolhead = toolhead
@@ -55,6 +65,7 @@ class TouchHomeMacro(Macro):
         self._lift_speed = lift_speed
         self._travel_speed = travel_speed
         self._random_radius = random_radius
+        self._thermal_expansion_coefficient = thermal_expansion_coefficient
 
     @override
     def run(self, params: MacroParams) -> None:
@@ -65,6 +76,8 @@ class TouchHomeMacro(Macro):
 
         # Check if Z is already homed before we start
         z_was_homed = self._toolhead.is_homed("z")
+        model = self._probe.get_model()
+        z_offset = model.z_offset if isinstance(model.z_offset, Real) else 0.0
 
         with force_home_z(self._toolhead):
             pos = self._toolhead.get_position()
@@ -80,7 +93,16 @@ class TouchHomeMacro(Macro):
             )
             self._toolhead.wait_moves()
 
-            trigger_pos = self._probe.perform_probe()
+            measured_touch_temp = self._toolhead.get_extruder_temperature().current
+            thermal_offset_term = self._compute_thermal_offset_term(
+                p.print_temp,
+                measured_touch_temp,
+            )
+
+            probe_trigger = self._probe.perform_probe()
+            raw_trigger = probe_trigger + z_offset
+            effective_z_offset = z_offset - (thermal_offset_term if thermal_offset_term is not None else 0.0)
+            trigger_pos = raw_trigger - effective_z_offset
 
         self._toolhead.z_home_end(self._probe)
         pos = self._toolhead.get_position()
@@ -88,18 +110,58 @@ class TouchHomeMacro(Macro):
 
         if z_was_homed:
             logger.info(
-                "Touch home at (%.3f, %.3f) adjusted z by %.3f mm",
+                "Touch home at (%.3f, %.3f) adjusted z by %.3f mm.",
                 pos.x,
                 pos.y,
                 -trigger_pos,
             )
         else:
             logger.info(
-                "Touch home at (%.3f, %.3f) set z to %.3f mm",
+                "Touch home at (%.3f, %.3f) set z to %.3f mm.",
                 pos.x,
                 pos.y,
                 pos.z - trigger_pos,
             )
+
+    def _compute_thermal_offset_term(
+        self,
+        print_temp: float | None,
+        measured_touch_temp: float,
+    ) -> float | None:
+        if print_temp is None:
+            return None
+
+        coeff = self._thermal_expansion_coefficient
+        if coeff is None:
+            logger.warning(
+                "PRINT_TEMP provided but [cartographer touch] thermal_expansion_coefficient is unset; "
+                "ignoring override.",
+            )
+            return None
+
+        temp_delta = print_temp - measured_touch_temp
+        offset_term = coeff * temp_delta
+        logger.info(
+            "Thermal offset term: %s mm (coeff=%s, delta_t=%s°C, touch=%s°C, print=%s°C)",
+            self._format_signed(offset_term),
+            self._format_trimmed(coeff, 8),
+            self._format_signed(temp_delta, 1),
+            self._format_trimmed(measured_touch_temp, 1),
+            self._format_trimmed(print_temp, 1),
+        )
+        return offset_term
+
+    @staticmethod
+    def _format_trimmed(value: float, decimals: int = DISPLAY_DECIMALS) -> str:
+        rounded = round(value, decimals)
+        if abs(rounded) < 0.5 * (10**-decimals):
+            rounded = 0.0
+        result = f"{rounded:.{decimals}f}".rstrip("0").rstrip(".")
+        return "0" if result in {"", "-0"} else result
+
+    def _format_signed(self, value: float, decimals: int = DISPLAY_DECIMALS) -> str:
+        sign = "+" if value >= 0 else "-"
+        return f"{sign}{self._format_trimmed(abs(value), decimals)}"
 
     def _get_homing_position(self, random_radius: float) -> tuple[float, float]:
         center_x, center_y = self._home_position
