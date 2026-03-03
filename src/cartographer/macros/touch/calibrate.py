@@ -423,7 +423,16 @@ class TouchCalibrateMacro(Macro):
             threshold,
             speed,
         )
-        model = TouchModelConfiguration(name=name, threshold=threshold, speed=speed, z_offset=DEFAULT_Z_OFFSET)
+        existing_model = self._config.touch.models.get(name)
+        model = TouchModelConfiguration(
+            name=name,
+            threshold=threshold,
+            speed=speed,
+            z_offset=DEFAULT_Z_OFFSET,
+            thermal_expansion_coefficient=(
+                existing_model.thermal_expansion_coefficient if existing_model is not None else None
+            ),
+        )
         self._config.save_touch_model(model)
         self._probe.touch.load_model(name)
         logger.info(

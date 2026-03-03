@@ -6,4 +6,5 @@ from cartographer.macros.touch.calibrate import (
     TouchCalibrateMacro as TouchCalibrateMacro,
 )
 from cartographer.macros.touch.home import TouchHomeMacro as TouchHomeMacro
+from cartographer.macros.touch.fit_expansion import TouchFitExpansionMacro as TouchFitExpansionMacro
 from cartographer.macros.touch.probe import TouchProbeMacro as TouchProbeMacro

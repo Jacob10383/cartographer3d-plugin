@@ -93,6 +93,8 @@ class KlipperConfiguration(Configuration):
         save(_key("threshold"), config.threshold)
         save(_key("speed"), config.speed)
         save(_key("z_offset"), round(config.z_offset, 3))
+        if config.thermal_expansion_coefficient is not None:
+            save(_key("thermal_expansion_coefficient"), round(config.thermal_expansion_coefficient, 8))
 
         # Version info fields are part of ModelVersionInfo, not individual option() fields
         sw_version = __version__

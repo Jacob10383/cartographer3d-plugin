@@ -9,6 +9,7 @@ from typing_extensions import TypeAlias
 from cartographer.interfaces.printer import MacroParams, Position, Toolhead
 from cartographer.macros.touch import TouchAccuracyMacro, TouchHomeMacro, TouchProbeMacro
 from cartographer.probe.touch_mode import TouchMode, TouchModeConfiguration
+from tests.mocks.params import MockParams
 
 if TYPE_CHECKING:
     from pytest import LogCaptureFixture
@@ -149,6 +150,129 @@ def test_touch_home_macro(
     macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
     probe.perform_probe = mocker.Mock(return_value=trigger)
     toolhead.get_position = mocker.Mock(return_value=Position(0, 0, height))
+    set_z_position_spy = mocker.spy(toolhead, "set_z_position")
+
+    macro.run(params)
+
+    assert set_z_position_spy.mock_calls == [mocker.call(expected)]
+
+
+def test_touch_home_macro_applies_thermal_delta_with_coeff(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+) -> None:
+    params = MockParams()
+    params.params["PRINT_TEMP"] = "260"
+
+    trigger = 0.1
+    coeff = 0.0004
+    measured_touch_temp = 140.0
+    expected_delta = coeff * (260 - measured_touch_temp)
+    expected = 2 - (trigger + expected_delta)
+
+    model = mocker.Mock()
+    model.name = "default"
+    model.z_offset = 0.0
+    model.thermal_expansion_coefficient = coeff
+    probe.get_model = mocker.Mock(return_value=model)
+
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=trigger)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 2))
+    toolhead.get_extruder_temperature = mocker.Mock(return_value=mocker.Mock(current=measured_touch_temp, target=140.0))
+    set_z_position_spy = mocker.spy(toolhead, "set_z_position")
+
+    macro.run(params)
+
+    assert set_z_position_spy.mock_calls == [mocker.call(expected)]
+
+
+def test_touch_home_macro_thermal_and_z_offset_interaction(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+) -> None:
+    params = MockParams()
+    params.params["PRINT_TEMP"] = "260"
+
+    # perform_probe() already returns trigger corrected by -z_offset.
+    trigger = 0.625
+    coeff = 0.0004
+    z_offset = -0.2
+    measured_touch_temp = 140.0
+    expected_delta = coeff * (260 - measured_touch_temp)
+    expected = 2 - (trigger + expected_delta)
+
+    model = mocker.Mock()
+    model.name = "default"
+    model.z_offset = z_offset
+    model.thermal_expansion_coefficient = coeff
+    probe.get_model = mocker.Mock(return_value=model)
+
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=trigger)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 2))
+    toolhead.get_extruder_temperature = mocker.Mock(return_value=mocker.Mock(current=measured_touch_temp, target=140.0))
+    set_z_position_spy = mocker.spy(toolhead, "set_z_position")
+
+    macro.run(params)
+
+    assert set_z_position_spy.mock_calls == [mocker.call(expected)]
+
+
+def test_touch_home_macro_applies_negative_thermal_term_when_print_temp_lower(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+) -> None:
+    params = MockParams()
+    params.params["PRINT_TEMP"] = "200"
+
+    trigger = 0.2
+    coeff = 0.0004
+    measured_touch_temp = 240.0
+    expected_thermal_term = coeff * (200 - measured_touch_temp)
+    expected = 2 - (trigger + expected_thermal_term)
+
+    model = mocker.Mock()
+    model.name = "default"
+    model.z_offset = 0.0
+    model.thermal_expansion_coefficient = coeff
+    probe.get_model = mocker.Mock(return_value=model)
+
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=trigger)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 2))
+    toolhead.get_extruder_temperature = mocker.Mock(return_value=mocker.Mock(current=measured_touch_temp, target=200.0))
+    set_z_position_spy = mocker.spy(toolhead, "set_z_position")
+
+    macro.run(params)
+
+    assert set_z_position_spy.mock_calls == [mocker.call(expected)]
+
+
+def test_touch_home_macro_skips_thermal_if_coeff_missing(
+    mocker: MockerFixture,
+    probe: Probe,
+    toolhead: Toolhead,
+) -> None:
+    params = MockParams()
+    params.params["PRINT_TEMP"] = "260"
+
+    trigger = 0.1
+    expected = 2 - trigger
+
+    model = mocker.Mock()
+    model.name = "default"
+    model.z_offset = 0.0
+    model.thermal_expansion_coefficient = None
+    probe.get_model = mocker.Mock(return_value=model)
+
+    macro = TouchHomeMacro(probe, toolhead, home_position=(10, 10), lift_speed=5, travel_speed=50, random_radius=0)
+    probe.perform_probe = mocker.Mock(return_value=trigger)
+    toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 2))
+    toolhead.get_extruder_temperature = mocker.Mock(return_value=mocker.Mock(current=140.0, target=140.0))
     set_z_position_spy = mocker.spy(toolhead, "set_z_position")
 
     macro.run(params)

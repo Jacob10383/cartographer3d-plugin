@@ -268,6 +268,10 @@ class TouchModelConfiguration:
     speed: float = option(min=1)
     z_offset: float = option(max=0)
     threshold: int = option(default=100)
+    thermal_expansion_coefficient: float | None = option(
+        "Optional touch thermal expansion slope in mm/°C used by touch-home delta correction.",
+        default=None,
+    )
     version_info: ModelVersionInfo = option(
         default=ModelVersionInfo(),
         parse_fn=_parse_version_info,
