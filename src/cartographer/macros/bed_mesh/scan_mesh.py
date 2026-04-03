@@ -27,6 +27,7 @@ from cartographer.macros.bed_mesh.helpers import (
     MeshGrid,
     Region,
     SampleProcessor,
+    smooth_positions,
 )
 from cartographer.macros.bed_mesh.paths.alternating_snake import AlternatingSnakePathGenerator
 from cartographer.macros.bed_mesh.paths.random_path import RandomPathGenerator
@@ -113,6 +114,8 @@ class BedMeshScanAllParams:
     speed: float = param("Scan speed", default=config_ref(BedMeshConfig, "speed"), min=50)
     height: float = param("Scan height", default=config_ref(ScanConfig, "mesh_height"), min=0.5, max=5)
     runs: int = param("Number of scan passes", default=config_ref(ScanConfig, "mesh_runs"), min=1)
+    iqr_reject: int = param("Enable per-cell IQR outlier rejection (0 or 1)", default=0)
+    smooth: float = param("Gaussian smoothing sigma (0 to disable, requires scipy)", default=0.0, min=0.0, max=2.0)
 
 
 @dataclass
@@ -125,6 +128,8 @@ class MeshScanParams:
     adaptive: bool
     adaptive_margin: float
     profile: str | None
+    iqr_reject: bool
+    smooth: float
     path_generator: PathGenerator
 
     @classmethod
@@ -167,6 +172,8 @@ class MeshScanParams:
             adaptive=adaptive,
             adaptive_margin=adaptive_margin,
             profile=profile,
+            iqr_reject=params.get_int("IQR_REJECT", default=0, minval=0, maxval=1) != 0,
+            smooth=params.get_float("SMOOTH", default=0.0, minval=0.0, maxval=2.0),
             path_generator=path_generator,
         )
 
@@ -224,7 +231,9 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         samples = self._collect_samples(path, scan_params)
 
         # Process samples and create mesh
-        positions = self.task_executor.run(self._process_samples_to_positions, grid, samples, scan_params.height)
+        positions = self.task_executor.run(
+            self._process_samples_to_positions, grid, samples, scan_params.height, scan_params.iqr_reject, scan_params.smooth
+        )
         positions = self._apply_zero_reference_height(positions, scan_params, grid)
 
         # Apply mesh to adapter
@@ -307,26 +316,29 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         )
 
     @log_duration("Processing samples into final mesh positions")
-    def _process_samples_to_positions(self, grid: MeshGrid, samples: list[Sample], height: float) -> list[Position]:
+    def _process_samples_to_positions(
+        self, grid: MeshGrid, samples: list[Sample], height: float, iqr_reject: bool, smooth: float
+    ) -> list[Position]:
         """Process samples into final mesh positions."""
         sample_processor = SampleProcessor(grid)
 
-
-        logger.info("Processing %d samples into %dx%d grid...",
-            len(samples), grid.x_resolution, grid.y_resolution)
+        logger.info("Processing %d samples into %dx%d grid...", len(samples), grid.x_resolution, grid.y_resolution)
 
         # Step 1: Compute heights
         heights = self.probe.scan.calculate_sample_distance_batch(samples)
 
-        # Step 2: Bin samples to grid
-        results = sample_processor.assign_samples_to_grid_batch(samples, heights)
-
-        # Step 3: Summary
-        valid_count = sum(1 for r in results if r.sample_count > 0)
+        # Step 2: Bin samples to grid, optionally rejecting per-cell IQR outliers
+        results = sample_processor.assign_samples_to_grid_batch(samples, heights, reject_outliers=iqr_reject)
 
         # Convert results to positions
         positions = self._results_to_positions(results, height)
-        return self.coordinate_transformer.apply_faulty_regions(positions, self.config.faulty_regions)
+        positions = self.coordinate_transformer.apply_faulty_regions(positions, self.config.faulty_regions)
+
+        # Smooth only after faulty-region repair so bad cells do not bleed into neighbors.
+        if smooth > 0:
+            positions = smooth_positions(positions, smooth)
+
+        return positions
 
     def _results_to_positions(self, results: list[GridPointResult], height: float) -> list[Position]:
         """Convert grid results to Position objects."""

@@ -9,8 +9,9 @@ from typing_extensions import override
 
 from cartographer.interfaces.configuration import MeshPath
 from cartographer.interfaces.printer import Position, Sample, Toolhead
+from cartographer.macros.bed_mesh.helpers import MeshGrid, Region
 from cartographer.macros.bed_mesh.interfaces import BedMeshAdapter
-from cartographer.macros.bed_mesh.scan_mesh import BedMeshCalibrateConfiguration, BedMeshCalibrateMacro
+from cartographer.macros.bed_mesh.scan_mesh import BedMeshCalibrateConfiguration, BedMeshCalibrateMacro, MeshScanParams
 from tests.mocks.config import MockConfiguration, default_general_config
 from tests.mocks.task_executor import InlineTaskExecutor
 from tests.mocks.toolhead import MockToolhead
@@ -235,6 +236,69 @@ class TestBedMeshIntegration:
         # Check that all expected nozzle positions were visited
         missing = expected_nozzle_positions - actual_move_positions
         assert not missing, f"Missing expected nozzle moves: {missing}"
+
+    def test_process_samples_repairs_faulty_regions_before_smoothing(
+        self,
+        probe: Probe,
+        toolhead: Toolhead,
+        adapter: BedMeshAdapter,
+        probe_offset: Position,
+        mesh_config: BedMeshCalibrateConfiguration,
+    ):
+        faulty_region = Region((50.0, 50.0), (50.0, 50.0))
+        task_executor = InlineTaskExecutor()
+        macro = BedMeshCalibrateMacro(
+            probe,
+            toolhead,
+            adapter,
+            None,
+            task_executor,
+            replace(mesh_config, faulty_regions=[faulty_region]),
+        )
+        grid = MeshGrid(mesh_config.mesh_min, mesh_config.mesh_max, 5, 5)
+        probe_positions = [(float(10 + 20 * x), float(10 + 20 * y)) for x in range(5) for y in range(5)]
+        heights = [1.0 for _ in probe_positions]
+        center_index = probe_positions.index((50.0, 50.0))
+        heights[center_index] = -1000.0
+        raw_samples = self.create_samples_at_probe_positions(probe_positions, heights, probe_offset)
+        samples = [macro._transform_sample(sample) for sample in raw_samples]
+
+        positions = macro._process_samples_to_positions(grid, samples, height=2.0, iqr_reject=True, smooth=1.0)
+
+        assert all(position.z == pytest.approx(1.0) for position in positions)
+
+    def test_process_samples_raises_on_nonfinite_grid_height(
+        self,
+        probe: Probe,
+        toolhead: Toolhead,
+        adapter: BedMeshAdapter,
+        mesh_config: BedMeshCalibrateConfiguration,
+        probe_offset: Position,
+    ):
+        task_executor = InlineTaskExecutor()
+        macro = BedMeshCalibrateMacro(probe, toolhead, adapter, None, task_executor, mesh_config)
+        grid = MeshGrid(mesh_config.mesh_min, mesh_config.mesh_max, 5, 5)
+        probe_positions = [(float(10 + 20 * x), float(10 + 20 * y)) for x in range(5) for y in range(5)]
+        heights = [1.0 for _ in probe_positions]
+        heights[0] = np.inf
+        raw_samples = self.create_samples_at_probe_positions(probe_positions, heights, probe_offset)
+        samples = [macro._transform_sample(sample) for sample in raw_samples]
+
+        with pytest.raises(RuntimeError, match=r"Mesh scan failed: .* no valid samples"):
+            _ = macro._process_samples_to_positions(grid, samples, height=2.0, iqr_reject=False, smooth=0.0)
+
+    def test_mesh_scan_params_defaults_iqr_and_smooth_off(
+        self,
+        params: MockParams,
+        mesh_config: BedMeshCalibrateConfiguration,
+        adapter: BedMeshAdapter,
+    ):
+        params.params = {"METHOD": "scan"}
+
+        parsed = MeshScanParams.from_macro_params(params, mesh_config, adapter)
+
+        assert parsed.iqr_reject is False
+        assert parsed.smooth == 0.0
 
     def test_adaptive_mesh_boundary_and_coordinate_transformation(
         self,

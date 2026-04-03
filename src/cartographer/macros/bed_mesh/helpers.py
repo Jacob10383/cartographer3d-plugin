@@ -157,6 +157,8 @@ class SampleProcessor:
         self,
         samples: list[Sample],
         heights: np.ndarray,
+        *,
+        reject_outliers: bool = False,
     ) -> list[GridPointResult]:
         """
         Vectorized assignment of samples to grid points.
@@ -237,7 +239,7 @@ class SampleProcessor:
         flat_indices = j_indices * self.grid.x_resolution + i_indices
 
         # Build results using grouped median
-        results = self._compute_grid_medians(flat_indices, valid_heights)
+        results = self._compute_grid_medians(flat_indices, valid_heights, reject_outliers=reject_outliers)
 
         # Count grid points with no samples
         empty_count = sum(1 for r in results if r.sample_count == 0)
@@ -259,9 +261,13 @@ class SampleProcessor:
         return results
 
     def _compute_grid_medians(
-        self, flat_indices: np.ndarray, heights: np.ndarray
+        self,
+        flat_indices: np.ndarray,
+        heights: np.ndarray,
+        *,
+        reject_outliers: bool = False,
     ) -> list[GridPointResult]:
-        """Compute median heights for each grid cell."""
+        """Compute median heights for each grid cell with optional IQR outlier rejection."""
         total_cells = self.grid.x_resolution * self.grid.y_resolution
 
         # Sort by flat index for efficient grouping
@@ -277,11 +283,26 @@ class SampleProcessor:
         # Create lookup for median and count per cell
         medians = np.full(total_cells, np.nan)
         sample_counts = np.zeros(total_cells, dtype=np.int32)
+        total_outliers = 0
 
         for idx, first, count in zip(unique_indices, first_occurrence, counts):
             cell_heights = sorted_heights[first : first + count]
+            if reject_outliers and count >= 4:
+                q1 = np.percentile(cell_heights, 25)
+                q3 = np.percentile(cell_heights, 75)
+                iqr = q3 - q1
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
+                mask = (cell_heights >= lower) & (cell_heights <= upper)
+                rejected = int(count - np.sum(mask))
+                if rejected > 0:
+                    total_outliers += rejected
+                    cell_heights = cell_heights[mask]
             medians[idx] = np.median(cell_heights)
             sample_counts[idx] = count
+
+        if total_outliers > 0:
+            logger.info("IQR filtering rejected %d outlier samples across all grid cells", total_outliers)
 
         # Build results in y-major order (j varies slowest)
         results: list[GridPointResult] = []
@@ -296,6 +317,24 @@ class SampleProcessor:
                 ))
 
         return results
+
+
+def smooth_positions(positions: list[Position], sigma: float) -> list[Position]:
+    """Apply Gaussian smoothing to a rectangular grid of positions."""
+    if not positions:
+        return []
+
+    arr: NDArray[np.float_] = np.asarray([(p.x, p.y, p.z) for p in positions])
+    xs = np.unique(arr[:, 0])
+    ys = np.unique(arr[:, 1])
+
+    sort_idx = np.lexsort((arr[:, 0], arr[:, 1]))
+    z_grid = arr[sort_idx, 2].reshape(len(ys), len(xs))
+
+    smoothed = scipy_helpers.gaussian_smooth_grid(z_grid, sigma)
+    logger.info("Applied Gaussian smoothing with sigma=%.2f", sigma)
+
+    return [Position(x=float(x), y=float(y), z=float(z)) for y, row in zip(ys, smoothed) for x, z in zip(xs, row)]
 
 
 @final

@@ -87,3 +87,17 @@ def rbf_interpolator(y: NDArray[Any], d: NDArray[Any], *, neighbors: int, smooth
         raise RuntimeError(msg) from None
 
     return RBFInterpolator(y, d, neighbors=neighbors, smoothing=smoothing)
+
+
+def gaussian_smooth_grid(grid: NDArray[np.float_], sigma: float) -> NDArray[np.float_]:
+    """Apply Gaussian smoothing to a 2D grid.
+
+    Requires scipy.  The filter preserves shape and handles edges
+    via reflection (``mode='reflect'``).
+    """
+    if not is_available():
+        msg = "scipy is required for Gaussian smoothing, but is not installed."
+        raise RuntimeError(msg)
+    from scipy.ndimage import gaussian_filter
+
+    return gaussian_filter(grid, sigma=sigma, mode="reflect")  # type: ignore[no-any-return]

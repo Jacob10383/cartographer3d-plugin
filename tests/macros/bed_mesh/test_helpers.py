@@ -14,6 +14,7 @@ from cartographer.macros.bed_mesh.helpers import (
     MeshGrid,
     Region,
     SampleProcessor,
+    smooth_positions,
 )
 
 
@@ -240,7 +241,29 @@ class TestSampleProcessor:
             else:
                 assert batch_result.z == scalar_result.z
 
-    def test_assign_samples_batch_ignores_nonfinite_heights(self):
+    def test_assign_samples_batch_matches_scalar_near_expanded_bounds(self):
+        samples = [
+            mock_sample(Position(-0.5, 0.0, 1.0)),
+            mock_sample(Position(10.5, 10.0, 2.0)),
+            mock_sample(Position(5.8, 5.8, 99.0)),  # too far from nearest grid point
+        ]
+        heights = np.array([1.0, 2.0, 99.0])
+
+        scalar = processor.assign_samples_to_grid(
+            samples,
+            lambda sample: sample.position.z if sample.position is not None else float("nan"),
+        )
+        batch = processor.assign_samples_to_grid_batch(samples, heights)
+
+        for scalar_result, batch_result in zip(scalar, batch):
+            assert batch_result.point == scalar_result.point
+            assert batch_result.sample_count == scalar_result.sample_count
+            if np.isnan(scalar_result.z):
+                assert np.isnan(batch_result.z)
+            else:
+                assert batch_result.z == scalar_result.z
+
+    def test_assign_samples_batch_preserves_nonfinite_heights_for_validation(self):
         samples = [
             mock_sample(Position(0.0, 0.0, 0.0)),
             mock_sample(Position(0.0, 0.0, 0.0)),
@@ -250,8 +273,37 @@ class TestSampleProcessor:
         results = processor.assign_samples_to_grid_batch(samples, np.array([1.0, np.inf, 2.0]))
 
         result_00 = next(r for r in results if r.point == (0.0, 0.0))
-        assert result_00.sample_count == 2
-        assert result_00.z == 1.5
+        assert result_00.sample_count == 3
+        assert result_00.z == 2.0
+
+    def test_assign_samples_batch_default_matches_scalar_with_outlier(self):
+        samples = [mock_sample(Position(0.0, 0.0, 0.0)) for _ in range(4)]
+        heights = np.array([0.0, 1.0, 2.0, 100.0])
+        height_values = iter(heights.tolist())
+
+        scalar = processor.assign_samples_to_grid(samples, lambda _: float(next(height_values)))
+        batch = processor.assign_samples_to_grid_batch(samples, heights)
+
+        scalar_result = next(r for r in scalar if r.point == (0.0, 0.0))
+        batch_result = next(r for r in batch if r.point == (0.0, 0.0))
+
+        assert batch_result.sample_count == scalar_result.sample_count
+        assert batch_result.z == scalar_result.z
+
+    def test_assign_samples_batch_can_enable_iqr_rejection(self):
+        samples = [mock_sample(Position(0.0, 0.0, 0.0)) for _ in range(4)]
+        heights = np.array([0.0, 1.0, 2.0, 100.0])
+
+        with_iqr = processor.assign_samples_to_grid_batch(samples, heights, reject_outliers=True)
+        without_iqr = processor.assign_samples_to_grid_batch(samples, heights, reject_outliers=False)
+
+        with_iqr_result = next(r for r in with_iqr if r.point == (0.0, 0.0))
+        without_iqr_result = next(r for r in without_iqr if r.point == (0.0, 0.0))
+
+        assert with_iqr_result.z == 1.0
+        assert without_iqr_result.z == 1.5
+        assert with_iqr_result.sample_count == 4
+        assert without_iqr_result.sample_count == 4
 
 
 transformer = CoordinateTransformer(probe_offset=Position(2.0, 1.0, 0))
@@ -458,6 +510,20 @@ class TestCoordinateTransformer:
             else:
                 # Outside faulty regions, must remain identical
                 assert p_new.z == p_old.z
+
+    def test_smoothing_after_faulty_region_repair_preserves_flat_mesh(self):
+        positions: list[Position] = []
+        faulty_region = Region((2.0, 2.0), (2.0, 2.0))
+        for y in range(5):
+            for x in range(5):
+                z = -1000.0 if faulty_region.contains_point((float(x), float(y))) else 10.0
+                positions.append(Position(float(x), float(y), z))
+
+        repaired = transformer.apply_faulty_regions(positions, faulty_regions=[faulty_region])
+        smoothed = smooth_positions(repaired, sigma=1.0)
+
+        for position in smoothed:
+            assert position.z == pytest.approx(10.0)
 
 
 class TestMeshBounds:
