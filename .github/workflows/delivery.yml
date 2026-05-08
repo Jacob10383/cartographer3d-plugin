@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/cartographer3d-plugin
+      url: https://pypi.org/p/cartographer3d-plugin-jacob10383
     permissions:
       id-token: write # IMPORTANT: mandatory for trusted publishing
     steps:

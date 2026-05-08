@@ -1,5 +1,5 @@
 [project]
-name = "cartographer3d-plugin"
+name = "cartographer3d-plugin-jacob10383"
 requires-python = ">=3.8, <4"
 license = { file = "LICENSE" }
 dependencies = ["typing-extensions~=4.12"]
@@ -15,8 +15,8 @@ description = "An extras for klipper to integrate with cartographer"
 dynamic = ["version"]
 
 [project.urls]
-homepage = "https://cartographer3d.com/"
-repository = "https://github.com/Cartographer3D/cartographer3d-plugin"
+homepage = "https://github.com/Jacob10383/cartographer3d-plugin"
+repository = "https://github.com/Jacob10383/cartographer3d-plugin"
 
 [project.optional-dependencies]
 scipy = [
