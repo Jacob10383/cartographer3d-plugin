@@ -35,6 +35,7 @@ from cartographer.macros.bed_mesh.paths.snake_path import SnakePathGenerator
 from cartographer.macros.bed_mesh.paths.spiral_path import SpiralPathGenerator
 from cartographer.macros.fields import config_ref, param
 from cartographer.macros.utils import get_choice, get_float_tuple, get_int_tuple
+from cartographer.probe.touch_mode import TOUCH_PLATE_MAX_X, TOUCH_PLATE_MAX_Y, TOUCH_PLATE_MIN_X, TOUCH_PLATE_MIN_Y
 
 if TYPE_CHECKING:
     from cartographer.interfaces.configuration import Configuration
@@ -251,12 +252,7 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
 
     def _run_touch(self, params: MacroParams) -> None:
         touch_params = MeshScanParams.from_macro_params(params, self.config, self.adapter)
-        grid = MeshGrid(
-            touch_params.mesh_bounds.min_point,
-            touch_params.mesh_bounds.max_point,
-            touch_params.resolution[0],
-            touch_params.resolution[1],
-        )
+        grid = self._create_touch_grid(touch_params)
 
         self.adapter.clear_mesh()
         positions = self._collect_touch_positions(grid.generate_points(), touch_params)
@@ -268,6 +264,30 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         positions = self._apply_touch_zero_reference_height(positions, touch_params, grid)
 
         self.adapter.apply_mesh(positions, touch_params.profile)
+
+    def _create_touch_grid(self, params: MeshScanParams) -> MeshGrid:
+        ox, oy = self.probe.scan.offset.x, self.probe.scan.offset.y
+        y_min, y_max = self.toolhead.get_axis_limits("y")
+
+        min_x = TOUCH_PLATE_MIN_X - ox
+        max_x = TOUCH_PLATE_MAX_X - ox
+        min_y = max(float(y_min), TOUCH_PLATE_MIN_Y - oy)
+        max_y = min(float(y_max), TOUCH_PLATE_MAX_Y - oy)
+
+        if min_y > max_y:
+            msg = (
+                "Touch mesh has no valid Y travel range: "
+                f"scanner plate Y=[{TOUCH_PLATE_MIN_Y:.2f}, {TOUCH_PLATE_MAX_Y:.2f}], "
+                f"toolhead Y=[{y_min:.2f}, {y_max:.2f}], offset Y={oy:.2f}"
+            )
+            raise RuntimeError(msg)
+
+        return MeshGrid(
+            (min_x, min_y),
+            (max_x, max_y),
+            params.resolution[0],
+            params.resolution[1],
+        )
 
     def _apply_zero_reference_height(
         self, positions: list[Position], params: MeshScanParams, grid: MeshGrid

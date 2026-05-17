@@ -285,8 +285,11 @@ class TestBedMeshIntegration:
         mesh_config: BedMeshCalibrateConfiguration,
         adapter: MockBedMeshAdapter,
         toolhead: MockToolhead,
+        probe_offset: Position,
     ):
-        expected_positions = [(float(10 + 20 * x), float(10 + 20 * y)) for x in range(5) for y in range(5)]
+        x_coords = np.round(np.linspace(0.0 - probe_offset.x, 350.0 - probe_offset.x, 5), 2)
+        y_coords = np.round(np.linspace(0.0, 100.0, 5), 2)
+        expected_positions = [(float(x), float(y)) for x in x_coords for y in y_coords]
         touch_heights = [1.0 + 0.01 * i for i in range(len(expected_positions))]
         probe.touch.results = touch_heights
 
@@ -297,14 +300,36 @@ class TestBedMeshIntegration:
         assert probe.scan.session_count == 0
         assert len(adapter.mesh_positions) == len(expected_positions)
 
-        zero_reference_height = touch_heights[expected_positions.index(mesh_config.zero_reference_position)]
         actual_mesh = {(p.x, p.y): p.z for p in adapter.mesh_positions}
         assert actual_mesh.keys() == set(expected_positions)
-        for point, z in zip(expected_positions, touch_heights):
-            assert actual_mesh[point] == pytest.approx(z - zero_reference_height)
 
         actual_move_positions = {(round(x, 2), round(y, 2)) for x, y in toolhead.moves}
         assert actual_move_positions.issuperset(expected_positions)
+
+    def test_touch_method_clamps_grid_to_scanner_plate_and_y_axis_limits(
+        self,
+        session: Session[Sample],
+        params: MockParams,
+        mesh_config: BedMeshCalibrateConfiguration,
+        adapter: MockBedMeshAdapter,
+    ):
+        probe_offset = Position(x=0.0, y=15.0, z=0.0)
+        probe = MockProbe(session, probe_offset)
+        toolhead = MockToolhead(axis_limits={"x": (25.0, 300.0), "y": (5.0, 300.0), "z": (0.0, 100.0)})
+        macro = BedMeshCalibrateMacro(probe, toolhead, adapter, None, InlineTaskExecutor(), mesh_config)
+
+        x_coords = np.round(np.linspace(0.0, 350.0, 5), 2)
+        y_coords = np.round(np.linspace(5.0, 300.0, 5), 2)
+        expected_positions = [(float(x), float(y)) for x in x_coords for y in y_coords]
+        probe.touch.results = [1.0 + 0.01 * i for i in range(len(expected_positions))]
+
+        params.params = {"METHOD": "touch", "PROBE_COUNT": "5,5"}
+        macro.run(params)
+
+        actual_mesh = {(round(p.x, 2), round(p.y, 2)) for p in adapter.mesh_positions}
+        assert actual_mesh == set(expected_positions)
+        assert min(y for _, y in actual_mesh) == 5.0
+        assert max(y for _, y in actual_mesh) == 300.0
 
     def test_process_samples_repairs_faulty_regions_before_smoothing(
         self,

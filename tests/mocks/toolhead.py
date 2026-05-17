@@ -6,10 +6,11 @@ from cartographer.interfaces.printer import HomingAxis, Position
 class MockToolhead:
     """Mock toolhead that tracks movements."""
 
-    def __init__(self):
+    def __init__(self, axis_limits: dict[HomingAxis, tuple[float, float]] | None = None):
         self.position: Position = Position(0, 0, 0)
         self.moves: list[tuple[float, float]] = []  # (x, y)
         self.last_move_time: float = 0.0
+        self.axis_limits = axis_limits or {"x": (0.0, 100.0), "y": (0.0, 100.0), "z": (0.0, 100.0)}
 
     def move(self, x: float | None = None, y: float | None = None, z: float | None = None, speed: float | None = None):
         """Track movement commands."""
@@ -34,5 +35,4 @@ class MockToolhead:
 
     def get_axis_limits(self, axis: HomingAxis) -> tuple[float, float]:
         """Mock axis limits - return arbitrary limits."""
-        del axis
-        return (0.0, 100.0)
+        return self.axis_limits[axis]

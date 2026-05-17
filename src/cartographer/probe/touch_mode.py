@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 TOUCH_ACCEL = 100
 MAX_TOUCH_TEMPERATURE_EPSILON = 2
+TOUCH_PLATE_MIN_X = 0.0
+TOUCH_PLATE_MAX_X = 350.0
+TOUCH_PLATE_MIN_Y = 0.0
+TOUCH_PLATE_MAX_Y = 350.0
 
 
 @dataclass(frozen=True)
@@ -154,15 +158,13 @@ class TouchBoundaries:
 
     @staticmethod
     def from_config(config: TouchModeConfiguration) -> TouchBoundaries:
-        mesh_min_x, mesh_min_y = config.mesh_min
-        mesh_max_x, mesh_max_y = config.mesh_max
         x_offset = config.x_offset
         y_offset = config.y_offset
 
-        min_x = mesh_min_x - min(x_offset, 0)
-        min_y = mesh_min_y - min(y_offset, 0)
-        max_x = mesh_max_x - max(x_offset, 0)
-        max_y = mesh_max_y - max(y_offset, 0)
+        min_x = TOUCH_PLATE_MIN_X - x_offset
+        min_y = TOUCH_PLATE_MIN_Y - y_offset
+        max_x = TOUCH_PLATE_MAX_X - x_offset
+        max_y = TOUCH_PLATE_MAX_Y - y_offset
 
         return TouchBoundaries(
             min_x=min_x,
@@ -329,6 +331,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
             log_start=False,
         )
         return median
+
     def _perform_single_probe(
         self,
         threshold_override: int | None = None,
@@ -373,7 +376,7 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
     def home_start(self, print_time: float) -> object:
         model = self.get_model()
         # Use threshold override if set, otherwise use model threshold
-        threshold = getattr(self, '_threshold_override', None) or model.threshold
+        threshold = getattr(self, "_threshold_override", None) or model.threshold
         if threshold <= 0:
             msg = "Threshold must be positive"
             raise RuntimeError(msg)
@@ -389,10 +392,9 @@ class TouchMode(TouchModelSelectorMixin, ProbeMode, Endstop):
 
         nozzle_temperature = max(self._toolhead.get_extruder_temperature())
         max_temp = self._config.max_touch_temperature
-        if not self._ignore_temp_limit:
-            if nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
-                msg = f"Nozzle temperature must be below {max_temp:d}C, was {nozzle_temperature:.1f}C"
-                raise RuntimeError(msg)
+        if not self._ignore_temp_limit and nozzle_temperature > max_temp + MAX_TOUCH_TEMPERATURE_EPSILON:
+            msg = f"Nozzle temperature must be below {max_temp:d}C, was {nozzle_temperature:.1f}C"
+            raise RuntimeError(msg)
         return self._mcu.start_homing_touch(print_time, threshold)
 
     @override

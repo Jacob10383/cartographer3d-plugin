@@ -128,9 +128,7 @@ def test_probe_threshold_override_reaches_home_start(
     assert all(call.args == (1.0, 2500) for call in mcu.start_homing_touch.call_args_list)
 
 
-def test_probe_speed_override_reaches_z_probing_move(
-    mocker: MockerFixture, toolhead: Toolhead, probe: Probe
-) -> None:
+def test_probe_speed_override_reaches_z_probing_move(mocker: MockerFixture, toolhead: Toolhead, probe: Probe) -> None:
     toolhead.z_probing_move = mocker.Mock(return_value=0.5)
     toolhead.get_position = mocker.Mock(return_value=Position(0, 0, 5))
 
@@ -187,7 +185,7 @@ def test_nozzle_outside_bounds(mocker: MockerFixture, toolhead: Toolhead, probe:
 
 
 def test_probe_outside_bounds(mocker: MockerFixture, toolhead: Toolhead, probe: Probe) -> None:
-    toolhead.get_position = mocker.Mock(return_value=Position(295, 95, 1))
+    toolhead.get_position = mocker.Mock(return_value=Position(355, 95, 1))
 
     with pytest.raises(RuntimeError, match="outside .* boundaries"):
         _ = probe.touch.home_start(0)

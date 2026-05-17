@@ -55,14 +55,14 @@ def make_config(
 @pytest.mark.parametrize(
     "mesh_min, mesh_max, x_offset, y_offset, expected",
     [
-        # Zero offsets
-        ((0.0, 0.0), (100.0, 100.0), 0.0, 0.0, TouchBoundaries(min_x=0.0, max_x=100.0, min_y=0.0, max_y=100.0)),
-        # Positive offsets
-        ((0.0, 0.0), (100.0, 100.0), 10.0, 5.0, TouchBoundaries(min_x=0.0, max_x=90.0, min_y=0.0, max_y=95.0)),
-        # Negative offsets
-        ((0.0, 0.0), (100.0, 100.0), -10.0, -5.0, TouchBoundaries(min_x=10.0, max_x=100.0, min_y=5.0, max_y=100.0)),
-        # Non-zero mesh_min
-        ((10.0, 20.0), (100.0, 100.0), 5.0, 10.0, TouchBoundaries(min_x=10.0, max_x=95.0, min_y=20.0, max_y=90.0)),
+        # Zero offsets; hardcoded physical plate is 0..350.
+        ((0.0, 0.0), (100.0, 100.0), 0.0, 0.0, TouchBoundaries(min_x=0.0, max_x=350.0, min_y=0.0, max_y=350.0)),
+        # Positive offsets shift valid nozzle coordinates down so the scanner stays on the plate.
+        ((0.0, 0.0), (100.0, 100.0), 10.0, 5.0, TouchBoundaries(min_x=-10.0, max_x=340.0, min_y=-5.0, max_y=345.0)),
+        # Negative offsets shift valid nozzle coordinates up.
+        ((0.0, 0.0), (100.0, 100.0), -10.0, -5.0, TouchBoundaries(min_x=10.0, max_x=360.0, min_y=5.0, max_y=355.0)),
+        # Mesh bounds no longer shrink the touch-safe range.
+        ((10.0, 20.0), (100.0, 100.0), 0.0, 15.0, TouchBoundaries(min_x=0.0, max_x=350.0, min_y=-15.0, max_y=335.0)),
     ],
 )
 def test_from_config_bounds(
