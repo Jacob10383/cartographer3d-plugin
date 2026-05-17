@@ -52,15 +52,20 @@ class MeshGrid(Region):
             msg = f"Grid resolution must be at least {MIN_GRID_RESOLUTION}x{MIN_GRID_RESOLUTION}"
             raise ValueError(msg)
 
+    # cached_property requires __dict__; do not add __slots__ to MeshGrid.
     @cached_property
     def x_coords(self) -> NDArray[np.float_]:
-        """Get array of x coordinates (cached)."""
-        return np.round(np.linspace(self.min_point[0], self.max_point[0], self.x_resolution), 2)
+        """Get array of x coordinates."""
+        arr = np.round(np.linspace(self.min_point[0], self.max_point[0], self.x_resolution), 2)
+        arr.setflags(write=False)
+        return arr
 
     @cached_property
     def y_coords(self) -> NDArray[np.float_]:
-        """Get array of y coordinates (cached)."""
-        return np.round(np.linspace(self.min_point[1], self.max_point[1], self.y_resolution), 2)
+        """Get array of y coordinates."""
+        arr = np.round(np.linspace(self.min_point[1], self.max_point[1], self.y_resolution), 2)
+        arr.setflags(write=False)
+        return arr
 
     @property
     def x_step(self) -> float:
@@ -183,8 +188,10 @@ class SampleProcessor:
         # Vectorized bounds check using max_distance as epsilon to match scalar
         # Region.contains_point((x, y), epsilon=self.max_distance) (upstream PR #480).
         in_bounds = (
-            (xs >= self.grid.min_point[0] - self.max_distance) & (xs <= self.grid.max_point[0] + self.max_distance) &
-            (ys >= self.grid.min_point[1] - self.max_distance) & (ys <= self.grid.max_point[1] + self.max_distance)
+            (xs >= self.grid.min_point[0] - self.max_distance)
+            & (xs <= self.grid.max_point[0] + self.max_distance)
+            & (ys >= self.grid.min_point[1] - self.max_distance)
+            & (ys <= self.grid.max_point[1] + self.max_distance)
         )
 
         out_of_bounds_count = len(xs) - int(np.sum(in_bounds))
@@ -203,8 +210,10 @@ class SampleProcessor:
         # Match scalar assignment: reject samples whose rounded index is outside
         # the grid instead of clipping them onto an edge point.
         valid_idx = (
-            (i_indices >= 0) & (i_indices < self.grid.x_resolution) &
-            (j_indices >= 0) & (j_indices < self.grid.y_resolution)
+            (i_indices >= 0)
+            & (i_indices < self.grid.x_resolution)
+            & (j_indices >= 0)
+            & (j_indices < self.grid.y_resolution)
         )
         invalid_index_count = len(i_indices) - int(np.sum(valid_idx))
 
@@ -232,7 +241,12 @@ class SampleProcessor:
         logger.info(
             "Filtered samples: %d invalid positions, %d out of bounds, %d invalid grid indexes, "
             "%d too far from grid → %d/%d samples used",
-            invalid_pos_count, out_of_bounds_count, invalid_index_count, too_far_count, len(i_indices), original_count
+            invalid_pos_count,
+            out_of_bounds_count,
+            invalid_index_count,
+            too_far_count,
+            len(i_indices),
+            original_count,
         )
 
         # Flatten 2D grid indices to 1D for efficient grouping
@@ -244,10 +258,7 @@ class SampleProcessor:
         # Count grid points with no samples
         empty_count = sum(1 for r in results if r.sample_count == 0)
         if empty_count > 0:
-            logger.warning(
-                "WARNING: %d/%d grid points have no samples assigned",
-                empty_count, len(results)
-            )
+            logger.warning("WARNING: %d/%d grid points have no samples assigned", empty_count, len(results))
 
         return results
 
@@ -276,9 +287,7 @@ class SampleProcessor:
         sorted_heights = heights[sort_order]
 
         # Find unique indices and their boundaries
-        unique_indices, first_occurrence, counts = np.unique(
-            sorted_indices, return_index=True, return_counts=True
-        )
+        unique_indices, first_occurrence, counts = np.unique(sorted_indices, return_index=True, return_counts=True)
 
         # Create lookup for median and count per cell
         medians = np.full(total_cells, np.nan)
@@ -310,11 +319,13 @@ class SampleProcessor:
             for i in range(self.grid.x_resolution):
                 flat_idx = j * self.grid.x_resolution + i
                 grid_point = self.grid.grid_index_to_point(j, i)
-                results.append(GridPointResult(
-                    point=grid_point,
-                    z=float(medians[flat_idx]),
-                    sample_count=int(sample_counts[flat_idx]),
-                ))
+                results.append(
+                    GridPointResult(
+                        point=grid_point,
+                        z=float(medians[flat_idx]),
+                        sample_count=int(sample_counts[flat_idx]),
+                    )
+                )
 
         return results
 
