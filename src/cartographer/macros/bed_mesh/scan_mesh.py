@@ -90,7 +90,7 @@ PATH_GENERATOR_MAP = {
 
 @dataclass(frozen=True)
 class BedMeshScanAllParams:
-    """Declarative parameter schema for BED_MESH_CALIBRATE (scan method).
+    """Declarative parameter schema for BED_MESH_CALIBRATE.
 
     This dataclass is used only for unknown-param validation and docs generation.
     Actual parsing is handled by MeshScanParams.from_macro_params because several
@@ -98,7 +98,7 @@ class BedMeshScanAllParams:
     that the generic param() system does not support.
     """
 
-    method: str = param("Calibration method", default="scan")
+    method: str = param("Calibration method (scan or touch)", default="scan")
     mesh_min: str | None = param("Minimum mesh coordinate (x,y)", default=None)
     mesh_max: str | None = param("Maximum mesh coordinate (x,y)", default=None)
     probe_count: str | None = param("Number of probe points (x,y)", default=None)
@@ -207,14 +207,19 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
     @override
     def run(self, params: MacroParams) -> None:
         """Main entry point for bed mesh calibration."""
-        # Handle fallback for non-scan methods
-        method = params.get("METHOD", "scan")
-        if method.lower() != "scan":
-            if self._fallback is None:
-                msg = f"Bed mesh calibration method '{method}' not supported"
-                raise RuntimeError(msg)
-            return self._fallback.run(params)
+        raw_method = params.get("METHOD", "scan")
+        method = raw_method.lower()
+        if method == "scan":
+            return self._run_scan(params)
+        if method == "touch":
+            return self._run_touch(params)
 
+        if self._fallback is None:
+            msg = f"Bed mesh calibration method '{raw_method}' not supported"
+            raise RuntimeError(msg)
+        return self._fallback.run(params)
+
+    def _run_scan(self, params: MacroParams) -> None:
         # Parse parameters and validate
         scan_params = MeshScanParams.from_macro_params(params, self.config, self.adapter)
 
@@ -232,12 +237,37 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
 
         # Process samples and create mesh
         positions = self.task_executor.run(
-            self._process_samples_to_positions, grid, samples, scan_params.height, scan_params.iqr_reject, scan_params.smooth
+            self._process_samples_to_positions,
+            grid,
+            samples,
+            scan_params.height,
+            scan_params.iqr_reject,
+            scan_params.smooth,
         )
         positions = self._apply_zero_reference_height(positions, scan_params, grid)
 
         # Apply mesh to adapter
         self.adapter.apply_mesh(positions, scan_params.profile)
+
+    def _run_touch(self, params: MacroParams) -> None:
+        touch_params = MeshScanParams.from_macro_params(params, self.config, self.adapter)
+        grid = MeshGrid(
+            touch_params.mesh_bounds.min_point,
+            touch_params.mesh_bounds.max_point,
+            touch_params.resolution[0],
+            touch_params.resolution[1],
+        )
+
+        self.adapter.clear_mesh()
+        positions = self._collect_touch_positions(grid.generate_points(), touch_params)
+        positions = self.coordinate_transformer.apply_faulty_regions(positions, self.config.faulty_regions)
+
+        if touch_params.smooth > 0:
+            positions = smooth_positions(positions, touch_params.smooth)
+
+        positions = self._apply_touch_zero_reference_height(positions, touch_params, grid)
+
+        self.adapter.apply_mesh(positions, touch_params.profile)
 
     def _apply_zero_reference_height(
         self, positions: list[Position], params: MeshScanParams, grid: MeshGrid
@@ -252,6 +282,17 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         if self.axis_twist_compensation:
             zero_measure += self.axis_twist_compensation.get_z_compensation_value(x=float(nx), y=float(ny))
 
+        return self.coordinate_transformer.normalize_to_zero_reference_point(positions, zero_height=zero_measure)
+
+    def _apply_touch_zero_reference_height(
+        self, positions: list[Position], params: MeshScanParams, grid: MeshGrid
+    ) -> list[Position]:
+        zrp = self.config.zero_reference_position
+        if grid.contains_point(zrp):
+            return self.coordinate_transformer.normalize_to_zero_reference_point(positions, zero_ref=zrp)
+
+        self._move_nozzle_to_point(zrp, params.speed)
+        zero_measure = self.probe.perform_touch()
         return self.coordinate_transformer.normalize_to_zero_reference_point(positions, zero_height=zero_measure)
 
     def _generate_path(self, grid: MeshGrid, params: MeshScanParams) -> list[Point]:
@@ -300,10 +341,27 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         logger.debug("Collected %d samples across %d runs", len(samples), params.runs)
         return [self._transform_sample(s) for s in samples]
 
+    @log_duration("Collecting touch samples across the mesh grid")
+    def _collect_touch_positions(self, points: list[Point], params: MeshScanParams) -> list[Position]:
+        """Collect one touch probe sequence at each mesh point."""
+        self.toolhead.move(z=params.height, speed=5)
+        positions: list[Position] = []
+        for point in points:
+            self._move_nozzle_to_point(point, params.speed)
+            self.toolhead.wait_moves()
+            positions.append(Position(x=float(point[0]), y=float(point[1]), z=self.probe.perform_touch()))
+
+        logger.debug("Collected %d touch mesh samples", len(positions))
+        return positions
+
     def _move_probe_to_point(self, point: Point, speed: float) -> None:
         """Move probe to specified point (converts to nozzle coordinates)."""
         x, y = self.coordinate_transformer.probe_to_nozzle(point)
         self.toolhead.move(x=float(x), y=float(y), speed=speed)
+
+    def _move_nozzle_to_point(self, point: Point, speed: float) -> None:
+        """Move nozzle directly to specified point."""
+        self.toolhead.move(x=float(point[0]), y=float(point[1]), speed=speed)
 
     def _transform_sample(self, sample: Sample) -> Sample:
         """Transform sample to probe coordinates."""

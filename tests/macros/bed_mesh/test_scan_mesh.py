@@ -35,16 +35,32 @@ class MockProbe:
     class MockScan:
         offset: Position
         session: Session[Sample]
+        session_count: int = 0
 
         def calculate_sample_distance_batch(self, samples: list[Sample]) -> np.ndarray:
             """Mock batch distance calculation - just return z positions."""
             return np.array([sample.position.z if sample.position else 0.0 for sample in samples])
 
         def start_session(self) -> Session[Sample]:
+            self.session_count += 1
             return self.session
+
+    @dataclass
+    class MockTouch:
+        results: list[float]
+        call_count: int = 0
+
+        def perform_probe(self) -> float:
+            result = self.results[self.call_count]
+            self.call_count += 1
+            return result
 
     def __init__(self, session: Session[Sample], offset: Position):
         self.scan = self.MockScan(offset, session)
+        self.touch = self.MockTouch([])
+
+    def perform_touch(self) -> float:
+        return self.touch.perform_probe()
 
 
 class MockBedMeshAdapter(BedMeshAdapter):
@@ -236,6 +252,59 @@ class TestBedMeshIntegration:
         # Check that all expected nozzle positions were visited
         missing = expected_nozzle_positions - actual_move_positions
         assert not missing, f"Missing expected nozzle moves: {missing}"
+
+    def test_default_method_uses_scan_mesh(
+        self,
+        mocker: MockerFixture,
+        bed_mesh_macro: BedMeshCalibrateMacro,
+        probe: MockProbe,
+        probe_offset: Position,
+        params: MockParams,
+        session: Mock,
+        adapter: MockBedMeshAdapter,
+    ):
+        expected_probe_positions = [(float(10 + 20 * x), float(10 + 20 * y)) for x in range(5) for y in range(5)]
+        heights = [1.5 + 0.1 * i for i in range(len(expected_probe_positions))]
+        session.get_items = mocker.Mock(
+            return_value=self.create_samples_at_probe_positions(expected_probe_positions, heights, probe_offset)
+        )
+        probe.touch.results = [0.0 for _ in expected_probe_positions]
+
+        params.params = {}
+        bed_mesh_macro.run(params)
+
+        assert len(adapter.mesh_positions) == len(expected_probe_positions)
+        assert probe.scan.session_count == 1
+        assert probe.touch.call_count == 0
+
+    def test_touch_method_uses_touch_probe_for_each_mesh_point(
+        self,
+        bed_mesh_macro: BedMeshCalibrateMacro,
+        probe: MockProbe,
+        params: MockParams,
+        mesh_config: BedMeshCalibrateConfiguration,
+        adapter: MockBedMeshAdapter,
+        toolhead: MockToolhead,
+    ):
+        expected_positions = [(float(10 + 20 * x), float(10 + 20 * y)) for x in range(5) for y in range(5)]
+        touch_heights = [1.0 + 0.01 * i for i in range(len(expected_positions))]
+        probe.touch.results = touch_heights
+
+        params.params = {"METHOD": "touch"}
+        bed_mesh_macro.run(params)
+
+        assert probe.touch.call_count == len(expected_positions)
+        assert probe.scan.session_count == 0
+        assert len(adapter.mesh_positions) == len(expected_positions)
+
+        zero_reference_height = touch_heights[expected_positions.index(mesh_config.zero_reference_position)]
+        actual_mesh = {(p.x, p.y): p.z for p in adapter.mesh_positions}
+        assert actual_mesh.keys() == set(expected_positions)
+        for point, z in zip(expected_positions, touch_heights):
+            assert actual_mesh[point] == pytest.approx(z - zero_reference_height)
+
+        actual_move_positions = {(round(x, 2), round(y, 2)) for x, y in toolhead.moves}
+        assert actual_move_positions.issuperset(expected_positions)
 
     def test_process_samples_repairs_faulty_regions_before_smoothing(
         self,
