@@ -264,6 +264,8 @@ class BedMeshCalibrateMacro(Macro, SupportsFallbackMacro):
         positions = self._apply_touch_zero_reference_height(positions, touch_params, grid)
 
         self.adapter.apply_mesh(positions, touch_params.profile)
+        self._move_nozzle_to_point(self.config.zero_reference_position, touch_params.speed)
+        self.toolhead.wait_moves()
 
     def _create_touch_grid(self, params: MeshScanParams) -> MeshGrid:
         ox, oy = self.probe.scan.offset.x, self.probe.scan.offset.y

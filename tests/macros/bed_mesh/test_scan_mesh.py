@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, final
+from typing import TYPE_CHECKING, cast, final
 
 import numpy as np
 import pytest
@@ -316,7 +316,14 @@ class TestBedMeshIntegration:
         probe_offset = Position(x=0.0, y=15.0, z=0.0)
         probe = MockProbe(session, probe_offset)
         toolhead = MockToolhead(axis_limits={"x": (25.0, 300.0), "y": (5.0, 300.0), "z": (0.0, 100.0)})
-        macro = BedMeshCalibrateMacro(probe, toolhead, adapter, None, InlineTaskExecutor(), mesh_config)
+        macro = BedMeshCalibrateMacro(
+            cast("Probe", cast("object", probe)),
+            cast("Toolhead", cast("object", toolhead)),
+            adapter,
+            None,
+            InlineTaskExecutor(),
+            mesh_config,
+        )
 
         x_coords = np.round(np.linspace(0.0, 350.0, 5), 2)
         y_coords = np.round(np.linspace(5.0, 300.0, 5), 2)
@@ -330,6 +337,32 @@ class TestBedMeshIntegration:
         assert actual_mesh == set(expected_positions)
         assert min(y for _, y in actual_mesh) == 5.0
         assert max(y for _, y in actual_mesh) == 300.0
+
+    def test_touch_method_parks_at_zero_reference_after_mesh(
+        self,
+        session: Session[Sample],
+        params: MockParams,
+        mesh_config: BedMeshCalibrateConfiguration,
+        adapter: MockBedMeshAdapter,
+    ):
+        probe_offset = Position(x=0.0, y=-15.0, z=0.0)
+        probe = MockProbe(session, probe_offset)
+        toolhead = MockToolhead(axis_limits={"x": (-2.0, 352.5), "y": (-0.4, 352.0), "z": (0.0, 100.0)})
+        macro = BedMeshCalibrateMacro(
+            cast("Probe", cast("object", probe)),
+            cast("Toolhead", cast("object", toolhead)),
+            adapter,
+            None,
+            InlineTaskExecutor(),
+            mesh_config,
+        )
+
+        probe.touch.results = [1.0 + 0.01 * i for i in range(25)]
+
+        params.params = {"METHOD": "touch", "PROBE_COUNT": "5,5"}
+        macro.run(params)
+
+        assert toolhead.moves[-1] == mesh_config.zero_reference_position
 
     def test_process_samples_repairs_faulty_regions_before_smoothing(
         self,
