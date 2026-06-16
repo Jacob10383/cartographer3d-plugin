@@ -28,6 +28,7 @@ class MeshPath(str, Enum):
     ALTERNATING_SNAKE = "alternating_snake"
     SPIRAL = "spiral"
     RANDOM = "random"
+    HILBERT = "hilbert"
 
     # See MeshDirection.__str__ for rationale.
     @override
@@ -132,6 +133,28 @@ def _parse_scan_domain(config: ConfigWrapper) -> tuple[float, float]:
     return _list_to_tuple(config.getfloatlist("domain", count=2))
 
 
+def _parse_mesh_max_corner_radius(config: ConfigWrapper) -> float | None:
+    raw = config.get("mesh_max_corner_radius", default=None)
+    if raw is None:
+        return None
+
+    value = raw.strip()
+    if value.lower() == "auto":
+        return None
+
+    try:
+        radius = float(value)
+    except ValueError:
+        msg = f"mesh_max_corner_radius must be 'auto' or a non-negative number, got {raw!r}"
+        raise ValueError(msg) from None
+
+    if radius < 0:
+        msg = f"mesh_max_corner_radius must be 'auto' or a non-negative number, got {radius}"
+        raise ValueError(msg)
+
+    return radius
+
+
 @dataclass(frozen=True)
 class GeneralConfig:
     config_section_key: ClassVar[str] = "cartographer"
@@ -148,6 +171,18 @@ class GeneralConfig:
         " E.g. 'CARTO' would result in 'CARTO_TOUCH_HOME'.",
         default=None,
     )
+    register_as_probe: bool = option(
+        "When true, Cartographer registers as the 'probe' printer object and 'probe:' pin chip,"
+        " overriding PROBE/PROBE_ACCURACY/QUERY_PROBE/Z_OFFSET_APPLY_PROBE commands."
+        " When false, Cartographer registers its endstop under the 'cartographer_probe:' pin chip"
+        " and does not claim the 'probe' object, allowing a separate [probe] section to coexist.",
+        default=True,
+    )
+
+    @property
+    def endstop_chip_name(self) -> str:
+        """The chip name under which Cartographer registers its virtual endstop."""
+        return "probe" if self.register_as_probe else "cartographer_probe"
 
 
 @dataclass(frozen=True)
@@ -168,6 +203,14 @@ class ScanConfig:
     mesh_path: MeshPath = option(
         "The path to use when calibrating a scan mesh.",
         default=MeshPath.SNAKE,
+    )
+    mesh_max_corner_radius: float | None = option(
+        "Maximum corner radius (mm) for scan mesh path arcs."
+        " Omit or set to 'auto' to derive the radius from point spacing and axis limits;"
+        " 0 disables smoothing arcs;"
+        " positive values cap the auto-computed radius.",
+        default=None,
+        parse_fn=_parse_mesh_max_corner_radius,
     )
     models: dict[str, ScanModelConfiguration] = field(default_factory=dict)  # provided via override
 

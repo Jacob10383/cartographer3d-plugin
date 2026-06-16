@@ -9,11 +9,17 @@ from typing import TYPE_CHECKING, Callable, Protocol, Sequence, final
 from gcode import GCodeCommand, GCodeDispatch
 from typing_extensions import override
 
-from cartographer.adapters.klipper.endstop import KlipperEndstop, KlipperHomingState
+from cartographer.adapters.klipper.endstop import (
+    KlipperEndstop,
+    KlipperEndstopBase,
+    KlipperHomingState,
+    KlipperProbeEndstop,
+)
 from cartographer.adapters.klipper.homing import KlipperHomingChip
 from cartographer.adapters.klipper.logging import setup_console_logger
 from cartographer.adapters.klipper.temperature import PrinterTemperatureCoil
 from cartographer.adapters.klipper_like.utils import reraise_for_klipper
+from cartographer.interfaces.errors import PrinterShutdownError
 from cartographer.interfaces.printer import Macro, MacroParams, SupportsFallbackMacro
 from cartographer.runtime.integrator import Integrator
 
@@ -71,7 +77,13 @@ class KlipperLikeIntegrator(Integrator, ABC):
 
     @override
     def register_endstop_pin(self, chip_name: str, pin: str, endstop: Endstop) -> None:
-        mcu_endstop = KlipperEndstop(self._mcu, endstop)
+        # When registered as probe (chip_name == "probe"), expose get_position_endstop so
+        # new Klipper routes Z homing through the probe-session path. Otherwise, omit it
+        # so new Klipper falls through to the traditional MCU_endstop homing path.
+        if chip_name == "probe":
+            mcu_endstop = KlipperProbeEndstop(self._mcu, endstop)
+        else:
+            mcu_endstop = KlipperEndstop(self._mcu, endstop)
         chip = KlipperHomingChip(mcu_endstop, pin)
         self._printer.lookup_object("pins").register_chip(chip_name, chip)
 
@@ -86,7 +98,7 @@ class KlipperLikeIntegrator(Integrator, ABC):
             else:
                 logger.warning("No original macro found to fallback to for '%s'", name)
 
-        self._gcode.register_command(name, _catch_macro_errors(macro.run), desc=macro.description)
+        self._gcode.register_command(name, catch_macro_errors(macro.run), desc=macro.description)
 
     @override
     def register_coil_temperature_sensor(self) -> None:
@@ -105,7 +117,7 @@ class KlipperLikeIntegrator(Integrator, ABC):
     def _handle_home_rails_end(self, homing: Homing, rails: Sequence[_Rail]) -> None:
         homing_state = KlipperHomingState(homing)
         klipper_endstops = [
-            es.endstop for rail in rails for es, _ in rail.get_endstops() if isinstance(es, KlipperEndstop)
+            es.endstop for rail in rails for es, _ in rail.get_endstops() if isinstance(es, KlipperEndstopBase)
         ]
         for endstop in klipper_endstops:
             endstop.on_home_end(homing_state)
@@ -116,11 +128,14 @@ class KlipperLikeIntegrator(Integrator, ABC):
         handler.setLevel(log_level)
 
 
-def _catch_macro_errors(func: Callable[[GCodeCommand], None]) -> Callable[[GCodeCommand], None]:
+def catch_macro_errors(func: Callable[[GCodeCommand], None]) -> Callable[[GCodeCommand], None]:
     @wraps(func)
     def wrapper(gcmd: GCodeCommand) -> None:
         try:
             func(gcmd)
+        except PrinterShutdownError:
+            msg = "Aborted: printer entered shutdown"
+            raise gcmd.error(msg) from None
         except (RuntimeError, ValueError) as e:
             msg = dedent(str(e)).replace("\n", " ").replace("  ", "\n").strip()
             raise gcmd.error(msg) from e

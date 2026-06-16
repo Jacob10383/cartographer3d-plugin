@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, final
 
+from mcu import TriggerDispatch as KlipperTriggerDispatch
 from typing_extensions import override
 
 from cartographer.adapters.klipper_like.mcu_platform import KlipperLikeMcuPlatform
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from mcu import MCU
+
+    from cartographer.interfaces.mcu_platform import TriggerDispatch
 
     class KalicoMCU(MCU):
         """Typing extension for Kalico's MCU which adds non-critical disconnect support."""
@@ -36,6 +39,14 @@ class KalicoMcuPlatform(KlipperLikeMcuPlatform):
     @property
     def _kalico_mcu(self) -> KalicoMCU:
         return self._host_mcu  # pyright: ignore[reportReturnType]
+
+    # ------------------------------------------------------------------
+    # Trigger dispatch
+    # ------------------------------------------------------------------
+
+    @override
+    def create_trigger_dispatch(self) -> TriggerDispatch:
+        return KlipperTriggerDispatch(self._host_mcu)
 
     # ------------------------------------------------------------------
     # Data response registration
